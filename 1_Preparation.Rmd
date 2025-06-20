@@ -1,0 +1,920 @@
+---
+title: "Data preparation"
+author: "Willem"
+date: "2025-06-06"
+output: html_document
+---
+# VALIDATION
+# 1 START
+Load
+```{r}
+library(tidyverse)
+library(rgbif)
+library(kewr)
+library(ggpubr)
+library(sf)
+library(maps)
+library(ggnewscale)
+library(bipartite)
+library(ggbipart)
+library(networkD3)
+```
+
+
+```{r}
+polplant <- read.csv2("../Data/2024-145_BE_metWP_sws+metToestemming.csv")
+```
+
+
+# 2 Data cleaning
+## 2.1 Plants
+Names
+```{r}
+# get all names
+names <- polplant |> group_by(waardplant) |> summarise(n=n())
+names$original <- names$waardplant
+
+# remove "spec"
+names$waardplant <- gsub("\\b(spec\\.)\\b", "", names$waardplant)
+names$waardplant <- trimws(names$waardplant)
+indet <- names$waardplant[grepl(" indet.", names$waardplant)]
+names$waardplant <- gsub(" indet.","", names$waardplant)
+
+## PLANTS
+# check against gbif for kingdom
+gbif <- name_backbone_checklist(names$waardplant)
+
+# check which are not plant in gbif
+non_plants <- gbif[!gbif$kingdom =="Plantae",]
+non_plants <- non_plants[!is.na(non_plants$verbatim_name),]
+
+# check which are not plant in powo
+non_plants_powo <- match_knms(non_plants$verbatim_name)
+non_plants_powo <- non_plants_powo$results
+non_plants_powo_plants <- non_plants[lengths(non_plants_powo)>2,]
+non_plants_powo_plants <- non_plants_powo_plants[! non_plants_powo_plants$verbatim_name %in% c("Anthophila indet.", "Osmia (Osmia)","Anthophila"),]
+non_plants_powo <- non_plants[! non_plants$verbatim_name %in% non_plants_powo_plants$verbatim_name,]
+
+# remove non-plants from name list
+names <- names[!names$waardplant %in% non_plants_powo$verbatim_name,]
+
+# check in powo 
+names_powo <- match_knms(names$waardplant)
+names_powo <- names_powo$results
+
+# safe depending on types
+safe_names <- c()
+multiple <- c()
+none <- c()
+# results can be false true multiple_matches or ""
+# all together also 1697
+for(i in 1: length(names_powo)){
+  if(names_powo[[i]][[2]]== "true"){
+    safe_names <- rbind(safe_names, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="multiple_matches"){
+    multiple <- rbind(multiple, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="false"){
+    none <- rbind(none, names_powo[[i]][[1]])
+  }
+}
+
+################
+# SAFE
+# give powo names also to name list
+names$powo <- safe_names[match(names$waardplant, safe_names)]
+names$genus <- gbif$genus[match(names$powo, gbif$canonicalName)]
+names$family <- gbif$family[match(names$powo, gbif$canonicalName)]
+
+
+################
+# NONE
+# search powo and store results in list if we find a direct match
+none_powo <- list()
+saved = T
+if(!saved){
+for(i in 1: length(none)){
+    # powo
+    r<- search_powo(none[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      none_powo[[i]] <- tmp
+    } else {
+      none_powo[[i]] <- NA
+    }
+    #write_rds(none_powo, "../Extra/Names/powo_no_link.R")
+}
+} else {
+  none_powo <- read_rds("../Extra/Names/powo_no_link.R")
+}
+
+# only get all with data
+none_name <- none[!lengths(none_powo)<2]
+none_powo_all <- none_powo
+none_powo <- none_powo[!lengths(none_powo)<2]
+
+# get the correct and accepted names
+none_safe <- data.frame(old = character(), new= character(), accepted= character())
+for(i in 1: length(none_powo)){
+  dat <- none_powo[[i]]
+  acc_name <- NA
+  acc <- NA
+  old <- NA
+  if(nrow(dat) == 1){
+    none_safe <- rbind(none_safe, data.frame(old= none_name[i], new = dat$name, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$accepted==T]
+    acc <- dat$accepted[dat$accepted==T]
+    old <- none_name[i]
+    none_safe <- rbind(none_safe, data.frame(old= old, new = acc_name, accepted= acc))
+  }
+}
+none_safe[none_safe$old %in% c("Astereae","Eupatorieae","Heliantheae"), 2:3] <- NA
+names$powo[is.na(names$powo)] <- none_safe$new[match(names$waardplant[is.na(names$powo)], none_safe$old)]
+
+################
+# MULTIPLE
+# search powo and store results in list if we find a direct match
+multiple_powo <- list()
+if(!saved){
+for(i in 1: length(multiple)){
+    # powo
+    r<- search_powo(multiple[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      multiple_powo[[i]] <- tmp
+    } else {
+      multiple_powo[[i]] <- NA
+    }
+    write_rds(multiple_powo, "../Extra/Names/powo_multiple.R")
+}} else {
+  multiple_powo <- read_rds("../Extra/Names/powo_multiple.R")
+}
+
+# only get all with data
+multiple_name <- multiple[!lengths(multiple_powo)<2]
+multiple_powo_all <- multiple_powo
+multiple_powo <- multiple_powo[!lengths(multiple_powo)<2]
+
+# get the correct and accepted names
+multiple_safe <- data.frame(old = character(), new= character(), accepted= character())
+for(i in 1: length(multiple_powo)){
+  dat <- multiple_powo[[i]]
+  acc_name <- NA
+  acc <- NA
+  old <- NA
+  if(nrow(dat) == 1){
+    multiple_safe <- rbind(multiple_safe, data.frame(old= multiple_name[i], new = dat$name, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$accepted==T]
+    acc_name <- ifelse(any(acc_name %in% multiple_name[i]), acc_name[match(acc_name, multiple_name[i])], acc_name)
+    acc <- dat$accepted[dat$accepted==T]
+    acc <- ifelse(length(acc)>1, any(dat$accepted[dat$name %in% acc_name]), acc)
+    old <- multiple_name[i]
+    multiple_safe <- rbind(multiple_safe, data.frame(old= old, new = acc_name, accepted= acc))
+  }
+}
+
+names$powo[is.na(names$powo)] <- multiple_safe$new[match(names$waardplant[is.na(names$powo)], multiple_safe$old)]
+
+# check which not yet
+multiple_not <- multiple_safe[is.na(multiple_safe$new),]
+# adapt
+multiple_not$new <- c("Camellia","Centaurea nigra","Cirsium palustre","Erodium","Forsythia","Geranium","Hypericum hirsutum","Ilex","Senecio vulgaris", 
+                      "Linum usitatissimum")
+# safe
+names$powo[is.na(names$powo)] <- multiple_not$new[match(names$waardplant[is.na(names$powo)], multiple_not$old)]
+```
+
+
+Check remaining names
+```{r}
+# check and remove some names incorrectly added
+lacking <- names[is.na(names$powo),]
+
+lacking$powo <- c("Aconitum × cammarum","Aesculus x carnea","Allium christophii","Allium vineale","Eriocapitella × hybrida","Anthemideae",
+                  "Arctium minus subsp. minus","Arctium x ambiguum","Astereae","Berberis × ottawensis","Brassica napus subsp. napus","Buddleja x weyeriana",
+                  "Calamintha nepeta subsp. nepeta","Cardueae","Caryopteris x clandonensis","Centaurea cyanus","Cichorieae",
+                  "Citrus x aurantium","Clinopodium nepeta subsp. spruneri","Crocus x helenae","Crocus x luteus","Echinops banaticus","Erica x darleyensis",
+                  "Erodium cicutarium subsp. cicutarium","Eupatorieae","Fallopia x bohemica","Ficaria verna","Fragaria x ananassa","Gaillardia x grandiflora",
+                  "Geranium x cantabrigiense","Geranium x magnificum","Geranium x oxonianum","Heliantheae","Helianthus x laetiflorus",
+                  "Heracleum sphondylium subsp. sphondylium","Hyacinthoides x massartiana","Hyacinthoides x massartiana","Hypericum x desetangsii",NA,
+                  "Knautia arvensis","Lonicera fragrantissima subsp. fragrantissima","Medicago x varia","Mentha x verticillata",
+                  "Mentha x piperita","Mentha x rotundifolia","Micrasterias decemdentata",NA,NA, "Narcissus pseudonarcissus subsp. pseudonarcissus",
+                  "Nepeta x faassenii","Ononis spinosa subsp. procurrens","Osmanthus x burkwoodii","Petunia × atkinsiana",NA, "Platanus x hispanica",
+                  "Populus x canadensis","Poterium sanguisorba subsp. sanguisorba","Prunus avium subsp. avium","Prunus domestica subsp. domestica",
+                  "Prunus x fruticans","Rhododendron x praecox","Ribes x nidigrolaria","Rosa subsect. Caninae","Rosa subsect. Rubigineae",
+                  "Rubus sect. Corylifolii","Rubus sect. Rubus","Rubus sect. Rubus","Salix babylonica","Salix cinerea subsp. cinerea","Salix hybrid s.l.",
+                  "Salix x ambigua","Salix x friesiana","Salix x guinieri","Salix x reichardtii","Salix x rubra","Salix × pendulina nothof. tristis",
+                  "Salix gmelinii","Salix gmelinii","Salvia x sylvestris","Scilla sect. Chionodoxa","Sempervivum sect. Jovibarba",
+                  "Solanum nigrum subsp. nigrum","Symphoricarpos x chenaultii","Symphyotrichum x versicolor","Symphytum grandiflorum",
+                  "Symphytum x hidcotense","Symphytum x uplandicum","Taraxacum officinale s.l.","Taraxacum sect. Ruderalia","Teucrium x lucidrys",
+                  "Tilia x europaea","Glandularia × hybrida","Veronica chamaedrys var. chamaedrys","Vicia sativa subsp. angustifolia",
+                  "Vicia tetrasperma subsp. tetrasperma" ,"Viola canina","Viola x wittrockiana","Vitis vinifera subsp. vinifera")
+
+names$powo[is.na(names$powo)] <- lacking$powo
+names <- names[!is.na(names$powo),]
+
+names$powo[names$powo=="Salix alba agg."] <- "Salix alba"
+names$powo[names$powo =="Brassica spec. + Sinapis"] <- "Brasica and Sinapis"
+```
+
+Again GBIF
+```{r}
+names$gbif <- gbif$species[match(names$waardplant, gbif$verbatim_name)]
+
+# check differences
+dif <- names[names$powo != names$gbif,]
+dif <- dif[!is.na(dif$waardplant),]
+
+names$powo[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
+
+```
+
+
+Genus
+```{r}
+# which have no genus or family
+no_genus <- names[is.na(names$genus),]
+no_family <- names[is.na(names$family),]
+
+# first use gbif again
+gbif <-  name_backbone_checklist(no_genus$powo)
+no_genus$genus <- gbif$genus
+no_genus$family <- gbif$family
+
+# assign
+names[is.na(names$genus),] <- no_genus
+
+# no genus (but yes family)
+no_genus <- names[is.na(names$genus) & is.na(names$family),]
+
+##########
+# Family
+saved=T
+no_family_list <- list()
+if(!saved){
+for(i in 1: nrow(no_genus)){
+    # powo
+    r<- search_powo(no_genus$powo[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      no_family_list[[i]] <- tmp
+    } else {
+      no_family_list[[i]] <- NA
+    }
+    write_rds(no_family_list, "../Extra/Names/no_family_list.R")
+}
+  } else {
+  no_family_list <- read_rds("../Extra/Names/no_family_list.R")
+  }
+
+# only get all with data
+no_family_name <- no_genus[!lengths(no_family_list)<2,]
+no_family_list_all <- no_family_list
+no_family_list <- no_family_list[!lengths(no_family_list)<2]
+i=1
+# get the correct and accepted names
+family_safe <- data.frame(name = character(), family= character(), accepted= character())
+for(i in 1: length(no_family_list)){
+  dat <- no_family_list[[i]]
+  acc_name <- NA
+  acc <- NA
+  name <- NA
+  if(nrow(dat) == 1){
+    multiple_safe <- rbind(family_safe, data.frame(name= no_family_name$powo[i], family = dat$family, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$family[dat$accepted==T]
+    freq <- table(acc_name)
+    maxFreq <- which.max(freq)[1]   
+    acc_name <-names(maxFreq)
+    acc <- dat$accepted[dat$accepted==T]
+    acc <- acc[!duplicated(acc)]
+    name <- no_family_name$powo[i]
+    family_safe <- rbind(family_safe, data.frame(name= name, family = acc_name, accepted= acc))
+  }
+}
+
+names$family[is.na(names$family)] <- family_safe$family[match(names$powo[is.na(names$family)], family_safe$name)]
+
+
+
+##########
+# Genus
+no_genus_list <- no_family_list_all
+
+# only get all with data
+no_genus_name <- no_genus[!lengths(no_genus_list)<2,]
+no_genus_list_all <- no_genus_list
+no_genus_list <- no_genus_list[!lengths(no_genus_list)<2]
+
+# get the correct and accepted names
+genus_safe <- data.frame(name = character(), genus= character(), accepted= character())
+for(i in 1: length(no_genus_list)){
+  dat <- no_genus_list[[i]]
+  acc_name <- NA
+  acc <- NA
+  name <- NA
+  if(nrow(dat) == 1){
+    acc <- ifelse(dat$rank=="Genus", dat$name, NA)
+    multiple_safe <- rbind(genus_safe, data.frame(name= no_genus_name$powo[i], genus = acc, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$rank=="Genus" & dat$accepted=="TRUE"]
+    freq <- table(acc_name)
+    maxFreq <- which.max(freq)[1]   
+    acc_name <-names(maxFreq)
+    acc <- dat$accepted[dat$rank=="Genus" & dat$accepted=="TRUE"]
+    acc <- acc[!duplicated(acc)]
+    acc_name <- ifelse(is.null(acc_name), dat$name[dat$rank=="Genus"], acc_name)
+    acc <- ifelse(length(acc)<1, dat$accepted[dat$rank=="Genus"], acc)
+    name <- no_genus_name$powo[i]
+    genus_safe <- rbind(genus_safe, data.frame(name= name, genus = acc_name, accepted= acc))
+  }
+}
+
+# assign
+names$genus[is.na(names$genus)] <- genus_safe$genus[match(names$powo[is.na(names$genus)], genus_safe$name)]
+```
+
+
+Check remaining names
+```{r}
+# check and remove some names incorrectly added
+lacking <- names[is.na(names$genus) & is.na(names$family),]
+
+lacking$genus <- c(NA,NA,NA,NA, NA,"Helleborus","Salix")
+
+names$genus[is.na(names$genus) & is.na(names$family)] <- lacking$genus
+
+lacking <- names[is.na(names$family),]
+
+lacking$family <- c("Asteraceae","Asteraceae",NA,"Asteraceae", 
+                    "Asteraceae","Ranunculaceae",
+                    "Desmidiaceae", "Salicaceae")
+
+names$family[is.na(names$family)] <- lacking$family
+
+# some changes
+names <- names[!names$powo =="Micrasterias decemdentata", ]
+names$genus[names$waardplant == names$family] <- NA
+names$genus[names$waardplant =="Bambusoideae"] <- NA
+names[names$waardplant=="Lotus glaber", 4:5] <- data.frame("Lotus tenuis","Lotus")
+names[names$waardplant=="Aronia", 5] <- data.frame("Aronia")
+names[names$waardplant=="Stellaria", 5] <- data.frame("Stellaria")
+names[names$waardplant=="Pastinaca", 5:6] <- data.frame("Pastinaca","Apiaceae")
+names[names$waardplant=="Anchusa arvensis", 4:5] <- data.frame("Anchusa arvensis","Anchusa")
+names[names$waardplant=="Trifolium", 5] <- data.frame("Trifolium")
+names[names$waardplant=="Fallopia japonica + Fallopia sachalinensis + Fallopia x bohemica", 4:5] <- data.frame("Reynoutria × bohemica", "Reynoutria")
+names[names$waardplant=="Eriobotrya japonica", 4:5] <- data.frame("Eriobotrya japonica", "Eriobotrya")
+names[names$waardplant=="Perovskia ", 4] <- data.frame("Salvia")
+names[names$waardplant=="Lychnis", 4] <- data.frame("Silene")
+names[names$waardplant=="Silene armeria", 5] <- data.frame("Silene")
+names[names$powo=="Salix alba", 5] <- data.frame("Salix")
+names[names$powo=="Cnicus", 5] <- data.frame("Centaurea")
+names[names$powo=="Convolvulus soldanella", 4:5] <- data.frame("Calystegia soldanella","Calystegia")
+names[names$powo=="Inula conyzae", 4:5] <- data.frame("Pentanema squarrosum","Pentanema")
+names[names$powo=="Leontodon saxatilis", 5] <- data.frame("Leontodon")
+names[names$powo=="Peucedanum palustre", 5] <- data.frame("Peucedanum")
+names[names$powo=="Potentilla rupestris", 4:5] <- data.frame("Drymocallis rupestris","Drymocallis")
+names[names$powo=="Sedum sediforme", 4:5] <- data.frame("Petrosedum sediforme","Petrosedum")
+names[names$powo=="Sedum rupestre", 4:5] <- data.frame("Petrosedum rupestre","Petrosedum")
+names[names$powo=="Sorbus intermedia", 4:5] <- data.frame("Scandosorbus intermedia","Scandosorbus")
+names[names$powo=="Brasica and Sinapis", 6] <- data.frame("Brassicaceae")
+```
+
+
+Reduce dataset
+```{r}
+# which do I remove
+remove_waardplanten <- polplant[!polplant$waardplant %in% names$original,]
+# which do I keep
+polplant <- polplant[polplant$waardplant %in% names$original,]
+# give powo name
+polplant$powo <- names$powo[match(polplant$waardplant, names$original)]
+polplant$genus_plants <- names$genus[match(polplant$waardplant, names$original)] 
+polplant$family_plants <- names$family[match(polplant$waardplant, names$original)]
+polplant$plant_level <- ifelse(is.na(polplant$genus_plants), "Family",NA)
+polplant$plant_level[is.na(polplant$plant_level)] <- ifelse(polplant$genus_plants[is.na(polplant$plant_level)]==
+                                                              polplant$powo[is.na(polplant$plant_level)], "Genus","Species")
+```
+
+Remove some data
+```{r}
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant")))
+```
+
+
+## 2.2 Pollinators
+```{r}
+# this has to be done against the gbif data
+pol <- polplant |> group_by(naam_lat, naam_nl) |> summarise(n=n())
+
+# gbif
+gbif <- name_backbone_checklist(pol$naam_lat)
+
+# assign gbif names
+pol$gbif <- gbif$species
+pol$genus <- gbif$genus
+pol$family <- gbif$family
+
+# some are different, check
+different_name <- pol[pol$naam_lat != pol$gbif,]
+# check dupplicates -> use gbif name
+dup <- pol[duplicated(pol$gbif) | duplicated(pol$gbif, fromLast = T),]
+# check remainings
+# different_name <- different_name[!different_name$naam_lat %in% dup$naam_lat,]
+# assign the original name instead of gbif name
+pol$gbif[pol$naam_lat %in% different_name$naam_lat] <- pol$naam_lat[pol$naam_lat %in% different_name$naam_lat]
+# adapt the aardhommelcomplex
+pol$gbif[pol$naam_nl=="aardhommelcomplex"] <- "Bombus terrestris complex"
+```
+
+
+
+Assign to database
+```{r}
+polplant$gbif <- pol$gbif[match(polplant$naam_lat, pol$naam_lat)]
+polplant$genus_pol <- pol$genus[match(polplant$naam_lat, pol$naam_lat)]
+polplant$family_pol <- pol$family[match(polplant$naam_lat, pol$naam_lat)]
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol")))
+```
+
+
+## 2.3 Pictures
+```{r}
+# load data
+pictures_polplant <- read.csv2("../Data/2024-145_BE_metWP_sws+metToestemming_linkFotoID.csv", sep= ",")
+
+# assign names
+pictures_polplant$species <- polplant$gbif[match(pictures_polplant$wnm_id, polplant$id)]
+
+# check all removed species
+removed <- pictures_polplant[(is.na(pictures_polplant$species)),]
+removed$species <- remove_waardplanten$waardplant[match(removed$wnm_id, remove_waardplanten$id)]
+
+# how many duplicates are there in the database
+# 42% of all observations are unique, so many duplicates
+length(unique(pictures_polplant$wnm_id))/ length(pictures_polplant$foto_id)
+
+# assign link picture to polplant
+polplant$picture_id <- pictures_polplant$foto_id[match(polplant$id, pictures_polplant$wnm_id)]
+# check how many of the species have pictures
+# about 20% of the observations have images
+sum(!is.na(polplant$picture_id))/ length(polplant$id)
+```
+
+
+
+## 2.4 Header
+General
+```{r}
+# check names
+colnames(polplant)
+#str(polplant)
+
+# remove some unneccessary columns
+polplant <- select(polplant, -utm1, -utm5, -bijzonderheden, -aanleverdatum)
+
+#change column names
+colnames(polplant) <- c("ID","Name","Name_nl","Date","Type","SpeciesID","Number","Behaviour","Method","Stage","Gender","PlantID","Plant","Status",
+                        "Number_pictures","x","y","Long", "Lat","powo","genus_plants","family_plants","plant_level","gbif","genus_pol","family_pol","PictureID")
+
+# change order
+polplant <- polplant |> relocate("gbif", .before="Name")
+polplant <- polplant |> relocate("powo", .before="Plant")
+polplant <- polplant |> relocate("PictureID", .after="ID")
+
+# check if any (except for the pictures and genera of plants) is NA
+any(is.na(polplant[,c(1,3:22, 24:26)]))
+```
+
+
+Time
+```{r}
+# change dates
+polplant$Date <- as.Date(polplant$Date, format= c("%d/%m/%Y"))
+
+# plot
+ggplot(polplant)+
+  geom_histogram(aes(x=Date), fill="lightgrey")+ scale_y_log10()+
+  theme_pubr()+
+  # Observations with a picture (blue overlay)
+  geom_histogram(data = subset(polplant, !is.na(PictureID)),
+                 aes(x = Date), fill = "steelblue", alpha = 1) +
+  ylab("Number of observations")+
+  xlab("Year")
+```
+
+Coordinates
+```{r}
+# Convert coordinates to sf points
+coord <- polplant[, c("ID", "Long", "Lat")] %>%
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326)
+
+# Get Belgium polygon as sf
+Belgium_df <- map_data("world") %>% filter(region == "Belgium")
+Belgium_sf <- st_as_sf(Belgium_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>% summarise(geometry = st_combine(geometry)) %>%  st_cast("POLYGON") %>%st_union() %>%st_sf()
+
+# the whole world
+world_df <- map_data("world")
+world_sf <- st_as_sf(world_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("POLYGON")
+bbox <- st_as_sfc(st_bbox(Belgium_sf))
+world_clipped <- st_crop(world_sf, xmin = 2.5, xmax = 6.5, ymin = 49.4, ymax = 51.6)
+
+# Create 0.05° grid and intersect with Belgium
+grid <- st_make_grid(Belgium_sf, cellsize = 0.05, square = TRUE) %>%
+  st_sf() %>%
+  st_intersection(Belgium_sf)
+
+# Count points per grid cell
+coord$obs <- 1
+grid_counts <- st_join(grid, coord, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarise(n = sum(obs, na.rm = TRUE))  # NA if no points
+
+grid_counts$n[grid_counts$n=="0"] <- NA
+grid_counts$obs_cat <- ifelse(is.na(grid_counts$n), "No data", "Data")
+grid_counts$log_n <- log10(grid_counts$n)
+
+ggplot() +
+  # Background: clipped world map
+  #geom_sf(data = world_clipped, fill = "antiquewhite", colour = NA) +
+  # Country outlines (actual borders only)
+  #geom_path(data = world_df, aes(x = long, y = lat, group = group),colour = "grey80", size = 0.2)+
+  # Belgium fill for contrast
+  geom_sf(data = Belgium_sf, fill = "antiquewhite", colour = "black", size = 0.3) +
+  # Grid cells with data (log10 scale)
+  geom_sf(data = filter(grid_counts, obs_cat == "Data"),
+          aes(fill = log_n), colour = NA) +
+  # Grid cells with no data (antiquewhite with grey frame)
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          fill = "antiquewhite", colour = "antiquewhite", size = 0.2) +
+  # Continuous fill scale
+  scale_fill_gradientn(
+    colours = viridis::viridis(100, option = "plasma"),
+    breaks = c(0, 1, 2, 3, 4),
+    labels = c("1", "10", "100", "1,000", "10,000"),
+    name = "Observations",
+    na.value = 0
+  ) +
+  # Add dummy legend for NA values
+  new_scale_fill() + 
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          aes(fill = obs_cat), show.legend = TRUE, colour = NA) +
+  scale_fill_manual(    
+    guide = guide_legend(override.aes = list(colour = "antiquewhite")),
+    name = NULL,
+    values = c("No data" = "antiquewhite")
+  ) +
+  coord_sf(xlim = c(2.5, 6.5), ylim = c(49.4, 51.6), expand = FALSE) +
+  theme_pubclean() +
+  theme(legend.position = "right") +
+  labs(x = "Longitude", y = "Latitude")
+
+#ggsave("../Images/map_observations_belgium.png", width= 7, height= 7)
+```
+
+Categories
+```{r}
+# check observation categories
+polplant |> group_by(Type) |> summarise(n=n())
+# explantation:
+# blauw (accepted by admin), grijs (accepted by image recognition), groen (accepted with evidence)
+```
+
+
+```{r}
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol")))
+```
+
+
+## 2.5 Origins
+```{r}
+origin <- polplant |> group_by(powo,Status) |> summarise(n=length(unique(powo)))
+
+# check aliens
+Belgium <- read_csv( "../Extra/GLONAF/Belgium.csv", show_col_types = FALSE)
+origin$glonaf <- Belgium$status[match(origin$powo, Belgium$taxa_accepted)]
+
+# easier, just alien and native
+polplant$Status[polplant$Status %in% c("Incidental import", "Naturalized","Does not occur")] <- "Alien"
+polplant$Status[polplant$Status %in% c("Expected","Native","Extinct")] <- "Native"
+unique(polplant$Status)
+```
+
+
+
+# 3 Basic numbers
+## 3.1 Plot
+Calculate numbers
+```{r}
+# number of pollinator species
+num_pol <- length(unique(polplant$gbif))
+
+# number of plant species
+num_plant <- length(unique(polplant$powo))
+
+# number of plant species per pollinator
+num_rel_species <- polplant |> group_by(gbif) |> summarise(n = length(unique(powo)), rel = n/num_plant)
+num_rel_genus <- polplant |> group_by(genus_pol) |> summarise(n = length(unique(powo)), rel = n/num_plant)
+num_rel_family <- polplant |> group_by(family_pol) |> summarise(n = length(unique(powo)), rel = n/num_plant)
+
+# number of pollinators per plant
+plant_num_rel_species <- polplant |> group_by(powo) |> summarise(n = length(unique(gbif)), rel = n/num_pol)
+plant_num_rel_genus <- polplant |> group_by(genus_plants) |> summarise(n = length(unique(gbif)), rel = n/num_pol)
+plant_num_rel_family <- polplant |> group_by(family_plants) |> summarise(n = length(unique(gbif)), rel = n/num_pol)
+```
+
+Some basic plots
+```{r}
+# number of associated species
+ggplot()+
+  geom_histogram(data=num_rel_species, aes(x= n), color= NA, fill="darkblue")+
+  theme_classic()
+```
+
+```{r}
+# Create a data frame with count of interactions
+links <- polplant %>%
+  count(family_pol, family_plants, name = "value")
+
+links <- links[links$value >29,]
+
+# Force order: pollinator families first, then plant families
+poll_families <- unique(links$family_pol)
+plant_families <- unique(links$family_plants)
+
+nodes <- data.frame(name = c(poll_families, plant_families))
+
+# Recode links to use 0-based indexing
+links$source <- match(links$family_pol, nodes$name) - 1
+links$target <- match(links$family_plants, nodes$name) - 1
+
+# Add grouping for colouring (optional)
+nodes$group <- ifelse(nodes$name %in% poll_families, "Pollinator", "Plant")
+
+# Create Sankey diagram
+sankeyNetwork(Links = links, Nodes = nodes,
+              Source = "source", Target = "target",
+              Value = "value", NodeID = "name",
+              NodeGroup = NULL, 
+              fontSize = 12, nodeWidth = 30,
+              sinksRight = TRUE)
+```
+
+Interaction matrix
+```{r}
+# create matrix
+interaction_matrix <- polplant |>dplyr::count(family_plants, family_pol) |> tidyr::pivot_wider(names_from = family_pol,values_from = n,values_fill = list(n = 0))
+interaction_matrix <- as.data.frame(interaction_matrix)
+rownames(interaction_matrix) <- interaction_matrix$family_plants
+interaction_matrix <- interaction_matrix[, -1]
+# plot
+plotweb(interaction_matrix, text.rot =90)
+```
+
+
+## 3.2 Origins
+```{r}
+num_rel_origin <- polplant |> group_by(powo,Status) |> summarise(unique=length(unique(gbif)), n=n())
+
+ggplot(data=num_rel_origin, aes(x= Status, y=unique, fill= Status))+
+  geom_violin(alpha= 0.5, scale= "width")+
+  geom_boxplot(width= 0.25, alpha=0.8, fill="white")+
+  theme_classic()+
+  ylab("Number of associated pollinators")+
+  xlab("Species status")+
+  theme(legend.position = "none")+
+  scale_colour_manual(values=c("#1E88E5",  "#004D40"))+
+  scale_fill_manual(values=c("#1E88E5",  "#004D40"))+
+  stat_summary(fun= "mean",
+               geom = "point", aes(group= Status), size=3)+
+  ggpubr::stat_compare_means(comparisons = list(c("Alien","Native")), label="p.signif", method= "t.test")+
+  scale_y_log10()
+```
+
+
+# ALL
+# 1 START
+Remove old data
+```{r}
+pol_names <- pol
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol_names")))
+```
+
+Download pollinator only data
+```{r}
+poldata <- read.csv2("../Data/2024-145_BE_zonderWP_sws+metToestemming.csv")
+```
+
+
+# 2 Data cleaning
+## 2.1 Pollinators
+```{r}
+# this has to be done against the gbif data
+pol <- poldata |> group_by(naam_lat, naam_nl) |> summarise(n=n())
+
+# gbif
+gbif <- name_backbone_checklist(pol$naam_lat)
+
+# assign gbif names
+pol$gbif <- gbif$species
+pol$genus <- gbif$genus
+pol$family <- gbif$family
+
+# some are different, check
+different_name <- pol[pol$naam_lat != pol$gbif,]
+# check dupplicates -> use original name (dutch names differ)
+dup <- pol[duplicated(pol$gbif) | duplicated(pol$gbif, fromLast = T),]
+# check remainings
+# different_name <- different_name[!different_name$naam_lat %in% dup$naam_lat,]
+# assign the original name instead of gbif name
+pol$gbif[pol$naam_lat %in% different_name$naam_lat] <- pol$naam_lat[pol$naam_lat %in% different_name$naam_lat]
+# adapt the aardhommelcomplex
+pol$gbif[pol$naam_nl=="aardhommelcomplex"] <- "Bombus terrestris complex"
+
+# two species were not found in gbif
+not_found <- pol[is.na(pol$gbif),]
+not_found$gbif <- not_found$naam_lat
+not_found$genus <- "Stelis"
+not_found$family <- "Megachilidae"
+pol[is.na(pol$gbif),] <- not_found 
+```
+
+
+Assign to database
+```{r}
+poldata$gbif <- pol$gbif[match(poldata$naam_lat, pol$naam_lat)]
+poldata$genus_pol <- pol$genus[match(poldata$naam_lat, pol$naam_lat)]
+poldata$family_pol <- pol$family[match(poldata$naam_lat, pol$naam_lat)]
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "poldata", "pol", "polplant", "pol_names")))
+```
+
+
+
+## 2.2 Pictures
+```{r}
+# load data
+pictures_poldata <- read.csv2("../Data/2024-145_BE_zonderWP_sws+metToestemming_linkFotoID.csv", sep= ",")
+
+# assign names
+pictures_poldata$species <- poldata$gbif[match(pictures_poldata$wnm_id, poldata$id)]
+
+# how many duplicates are there in the database
+# 68% of all observations are unique, so many duplicates
+length(unique(pictures_poldata$wnm_id))/ length(pictures_poldata$foto_id)
+
+# assign link picture to poldata
+poldata$picture_id <- pictures_poldata$foto_id[match(poldata$id, pictures_poldata$wnm_id)]
+# check how many of the species have pictures
+# about 75% of the observations have images
+sum(!is.na(poldata$picture_id))/ length(poldata$id)
+```
+
+
+## 2.3 Header
+General
+```{r}
+# check names
+colnames(poldata)
+#str(poldata)
+
+# remove some unneccessary columns
+poldata <- select(poldata, -utm1, -utm5, -bijzonderheden, -aanleverdatum)
+
+#change column names
+colnames(poldata) <- c("ID","Name","Name_nl","Date","Type","SpeciesID","Number","Behaviour","Method","Stage","Gender",
+                        "Number_pictures","x","y","Long", "Lat","PictureID","gbif","genus_pol","family_pol")
+
+# change order
+poldata <- poldata |> relocate("gbif", .before="Name")
+poldata <- poldata |> relocate("PictureID", .after="ID")
+
+# check if any (except for the pictures) is NA
+any(is.na(poldata[,c(1,3:20)]))
+```
+
+
+Time
+```{r}
+# change dates
+poldata$Date <- as.Date(poldata$Date, format= c("%d/%m/%Y"))
+
+# plot
+ggplot(poldata)+
+  geom_histogram(aes(x=Date), fill="lightgrey")+ scale_y_log10()+
+  theme_pubr()+
+  # Observations with a picture (blue overlay)
+  geom_histogram(data = subset(poldata, !is.na(PictureID)),
+                 aes(x = Date), fill = "steelblue", alpha = 1) +
+  ylab("Number of observations")+
+  xlab("Year")
+```
+
+
+
+Coordinates
+```{r}
+# Convert coordinates to sf points
+coord <- poldata[, c("ID", "Long", "Lat")] %>%
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326)
+
+# Get Belgium polygon as sf
+Belgium_df <- map_data("world") %>% filter(region == "Belgium")
+Belgium_sf <- st_as_sf(Belgium_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>% summarise(geometry = st_combine(geometry)) %>%  st_cast("POLYGON") %>%st_union() %>%st_sf()
+
+# the whole world
+world_df <- map_data("world")
+world_sf <- st_as_sf(world_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("POLYGON")
+bbox <- st_as_sfc(st_bbox(Belgium_sf))
+world_clipped <- st_crop(world_sf, xmin = 2.5, xmax = 6.5, ymin = 49.4, ymax = 51.6)
+
+# Create 0.05° grid and intersect with Belgium
+grid <- st_make_grid(Belgium_sf, cellsize = 0.05, square = TRUE) %>%
+  st_sf() %>%
+  st_intersection(Belgium_sf)
+
+# Count points per grid cell
+coord$obs <- 1
+grid_counts <- st_join(grid, coord, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarise(n = sum(obs, na.rm = TRUE))  # NA if no points
+
+grid_counts$n[grid_counts$n=="0"] <- NA
+grid_counts$obs_cat <- ifelse(is.na(grid_counts$n), "No data", "Data")
+grid_counts$log_n <- log10(grid_counts$n)
+
+ggplot() +
+  # Background: clipped world map
+  #geom_sf(data = world_clipped, fill = "antiquewhite", colour = NA) +
+  # Country outlines (actual borders only)
+  #geom_path(data = world_df, aes(x = long, y = lat, group = group),colour = "grey80", size = 0.2)+
+  # Belgium fill for contrast
+  geom_sf(data = Belgium_sf, fill = "antiquewhite", colour = "black", size = 0.3) +
+  # Grid cells with data (log10 scale)
+  geom_sf(data = filter(grid_counts, obs_cat == "Data"),
+          aes(fill = log_n), colour = NA) +
+  # Grid cells with no data (antiquewhite with grey frame)
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          fill = "antiquewhite", colour = "antiquewhite", size = 0.2) +
+  # Continuous fill scale
+  scale_fill_gradientn(
+    colours = viridis::viridis(100, option = "plasma"),
+    breaks = c(0, 1, 2, 3, 4),
+    labels = c("1", "10", "100", "1,000", "10,000"),
+    name = "Observations",
+    na.value = 0
+  ) +
+  # Add dummy legend for NA values
+  new_scale_fill() + 
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          aes(fill = obs_cat), show.legend = TRUE, colour = NA) +
+  scale_fill_manual(    
+    guide = guide_legend(override.aes = list(colour = "antiquewhite")),
+    name = NULL,
+    values = c("No data" = "antiquewhite")
+  ) +
+  coord_sf(xlim = c(2.5, 6.5), ylim = c(49.4, 51.6), expand = FALSE) +
+  theme_pubclean() +
+  theme(legend.position = "right") +
+  labs(x = "Longitude", y = "Latitude")
+
+#ggsave("../Images/map_observations_pol_only_belgium.png", width= 7, height= 7)
+```
+
+
+Categories
+```{r}
+# check observation categories
+poldata |> group_by(Type) |> summarise(n=n())
+# explantation:
+# blauw (accepted by admin), grijs (accepted by image recognition), groen (accepted with evidence)
+```
+
+
+```{r}
+rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol", "poldata", "pol_names")))
+```
+
+# SAVE
+```{r}
+write_csv(polplant,"../Data/polplant.csv")
+write_csv(poldata,"../Data/poldata.csv")
+```
+
