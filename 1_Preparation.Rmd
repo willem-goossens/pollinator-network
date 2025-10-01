@@ -4,7 +4,7 @@ author: "Willem"
 date: "2025-06-06"
 output: html_document
 ---
-# VALIDATION
+# PLANT-POL
 # 1 START
 Load
 ```{r}
@@ -132,6 +132,13 @@ for(i in 1: length(none_powo)){
   }
 }
 none_safe[none_safe$old %in% c("Astereae","Eupatorieae","Heliantheae"), 2:3] <- NA
+
+dup <- none_safe[duplicated(none_safe$old),]
+gbif_dup <- name_backbone_checklist(dup$old)
+any(gbif_dup$rank != "FAMILY" & gbif_dup$rank != "KINGDOM")
+
+none_safe$new[none_safe$old %in% dup$old] <- none_safe$old[none_safe$old %in% dup$old]
+
 names$powo[is.na(names$powo)] <- none_safe$new[match(names$waardplant[is.na(names$powo)], none_safe$old)]
 
 ################
@@ -152,7 +159,8 @@ for(i in 1: length(multiple)){
       multiple_powo[[i]] <- NA
     }
     write_rds(multiple_powo, "../Extra/Names/powo_multiple.R")
-}} else {
+}
+  } else {
   multiple_powo <- read_rds("../Extra/Names/powo_multiple.R")
 }
 
@@ -185,8 +193,8 @@ names$powo[is.na(names$powo)] <- multiple_safe$new[match(names$waardplant[is.na(
 # check which not yet
 multiple_not <- multiple_safe[is.na(multiple_safe$new),]
 # adapt
-multiple_not$new <- c("Camellia","Centaurea nigra","Cirsium palustre","Erodium","Forsythia","Geranium","Hypericum hirsutum","Ilex","Senecio vulgaris", 
-                      "Linum usitatissimum")
+multiple_not$new <- c("Arum","Camellia","Centaurea nigra","Cirsium palustre","Erodium","Forsythia","Geranium","Hypericum hirsutum","Ilex","Jacobaea vulgaris", 
+                      "Linum usitatissimum","Spiraea japonica")
 # safe
 names$powo[is.na(names$powo)] <- multiple_not$new[match(names$waardplant[is.na(names$powo)], multiple_not$old)]
 ```
@@ -226,14 +234,35 @@ names$powo[names$powo =="Brassica spec. + Sinapis"] <- "Brasica and Sinapis"
 
 Again GBIF
 ```{r}
-names$gbif <- gbif$species[match(names$waardplant, gbif$verbatim_name)]
+gbif_powo <- name_backbone_checklist(names$powo)
+
+names$gbif <- gbif_powo$species[match(names$powo, gbif_powo$verbatim_name)]
 
 # check differences
 dif <- names[names$powo != names$gbif,]
 dif <- dif[!is.na(dif$waardplant),]
 
-names$powo[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
+# subspecies are currently merged, which is not really the purpose here
+dif_subsp <- dif[dif$powo %in% gbif_powo$verbatim_name[gbif_powo$rank=="SUBSPECIES"],]
+gbif_powo_subsp <- gbif_powo[gbif_powo$rank %in% c("SUBSPECIES"),]
+# we will give them their cononical names
+vegdata_name <- vegdata::parse.taxa(gbif_powo_subsp$scientificName)
+vegdata_name[!vegdata_name$rank.suff=="subsp.",4:6] <- c("subsp.","australis", "Cornus sanguinea subsp. australis")
+gbif_powo_subsp$vegdata <- vegdata_name$scientificName
+# are there differences
+gbif_powo_subsp[!gbif_powo_subsp$verbatim_name %in% gbif_powo_subsp$vegdata, ]
 
+# assign names for subspecies again
+dif$gbif[dif$powo %in% gbif_powo_subsp$verbatim_name] <- gbif_powo_subsp$vegdata
+
+
+# assign to names vector
+names$powo[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
+names$gbif[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
+
+# check again for genera
+names$genus[is.na(names$genus)] <- gbif_powo$genus[match(names$powo[is.na(names$genus)], gbif_powo$verbatim_name)]
+names$family[is.na(names$family)] <- gbif_powo$family[match(names$powo[is.na(names$family)], gbif_powo$verbatim_name)]
 ```
 
 
@@ -251,12 +280,12 @@ no_genus$family <- gbif$family
 # assign
 names[is.na(names$genus),] <- no_genus
 
-# no genus (but yes family)
+# no genus (and no family)
 no_genus <- names[is.na(names$genus) & is.na(names$family),]
 
 ##########
 # Family
-saved=T
+saved=F
 no_family_list <- list()
 if(!saved){
 for(i in 1: nrow(no_genus)){
@@ -271,17 +300,18 @@ for(i in 1: nrow(no_genus)){
     } else {
       no_family_list[[i]] <- NA
     }
-    write_rds(no_family_list, "../Extra/Names/no_family_list.R")
+    #write_rds(no_family_list, "../Extra/Names/no_family_list.R")
 }
   } else {
-  no_family_list <- read_rds("../Extra/Names/no_family_list.R")
+  no_family_list_test <- read_rds("../Extra/Names/no_family_list.R")
   }
 
 # only get all with data
 no_family_name <- no_genus[!lengths(no_family_list)<2,]
 no_family_list_all <- no_family_list
 no_family_list <- no_family_list[!lengths(no_family_list)<2]
-i=1
+
+
 # get the correct and accepted names
 family_safe <- data.frame(name = character(), family= character(), accepted= character())
 for(i in 1: length(no_family_list)){
@@ -350,14 +380,14 @@ Check remaining names
 # check and remove some names incorrectly added
 lacking <- names[is.na(names$genus) & is.na(names$family),]
 
-lacking$genus <- c(NA,NA,NA,NA, NA,"Helleborus","Salix")
+lacking$genus <- c(NA,NA,NA,NA, NA, "Anacis","Helleborus","Salix")
 
 names$genus[is.na(names$genus) & is.na(names$family)] <- lacking$genus
 
 lacking <- names[is.na(names$family),]
 
 lacking$family <- c("Asteraceae","Asteraceae",NA,"Asteraceae", 
-                    "Asteraceae","Ranunculaceae",
+                    "Asteraceae","Ranunculaceae", "Asteraceae",
                     "Desmidiaceae", "Salicaceae")
 
 names$family[is.na(names$family)] <- lacking$family
@@ -391,13 +421,15 @@ names[names$powo=="Brasica and Sinapis", 6] <- data.frame("Brassicaceae")
 ```
 
 
+
+
 Reduce dataset
 ```{r}
 # which do I remove
 remove_waardplanten <- polplant[!polplant$waardplant %in% names$original,]
 # which do I keep
 polplant <- polplant[polplant$waardplant %in% names$original,]
-# give powo name
+# give accepted name
 polplant$powo <- names$powo[match(polplant$waardplant, names$original)]
 polplant$genus_plants <- names$genus[match(polplant$waardplant, names$original)] 
 polplant$family_plants <- names$family[match(polplant$waardplant, names$original)]
@@ -614,6 +646,223 @@ polplant$Status[polplant$Status %in% c("Expected","Native","Extinct")] <- "Nativ
 unique(polplant$Status)
 ```
 
+```{r}
+status <- read_csv("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/GLONAF/Belgium.csv", show_col_types = FALSE)
+unique(status$status)
+names$source <- NA
+# assign Belgium
+names$status <- status$status[match(names$powo, status$taxon_corrected)]
+names$source[!is.na(names$status)] <- "GloNAF"
+sum(!is.na(names$status))
+```
+
+```{r}
+status <- readxl::read_excel("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/Species names/Veronika_name_correction.xlsx")
+extra <- status[status$Status.checked.VK =="extra",]
+extra <- extra[!duplicated(extra$`Aggregated name`),]
+status <- status[status$Region=="Belgium",]
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$powo[is.na(names$status)], status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$gbif[is.na(names$status)] , status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$original[is.na(names$status)] , status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$powo[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$gbif[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$original[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+
+# assign extra-European
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$powo[is.na(names$status)] , extra$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$original[is.na(names$status)] , extra$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$powo[is.na(names$status)] , extra$`Original EVA name`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Kalusova"
+```
+
+
+```{r}
+status <- readxl::read_excel("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/Species names/Irena_taxa_update.xlsx")
+extra <- status[status$statusNew =="extra",]
+extra <- extra[!duplicated(extra$species),]
+
+status <- status[status$Region=="Belgium",]
+
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)], status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+
+# assign extra-European
+names$status[is.na(names$status)] <- extra$statusNew[match(names$powo[is.na(names$status)] , extra$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$statusNew[match(names$original[is.na(names$status)] , extra$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$statusNew[match(names$powo[is.na(names$status)] , extra$`Matched concept`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Kalusova"
+```
+
+
+
+
+
+```{r}
+species_mab <- read.delim("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/Names/Aliens/taxon.txt")
+status_mab <- read.delim("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/Names/Aliens/distribution.txt")
+
+species_mab$species <- vegdata::taxname.removeAuthors(species_mab$scientificName)
+
+status<- species_mab
+status$statusNew <- "Alien"
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)], status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Manual alien plants Belgium"
+
+```
+
+
+
+```{r}
+names$status[names$status %in% c("Naturalized","Invasive","intra","extra")] <- "Alien"
+names$status[names$status %in% c("native")] <- "Native"
+
+
+check <- names[!is.na(names$status),]
+
+# remaining
+remaining <-names[is.na(names$status),]
+remaining$waarnemingen <- polplant$Status[match(remaining$original, polplant$Plant)]
+remaining_aliens <- remaining[remaining$waarnemingen =="Alien",]
+# I checked some, all were indeed alien
+
+# Assign
+names$source[is.na(names$source)] <- "Waarnemingen"
+names$status[is.na(names$status)] <- remaining$waarnemingen
+```
+
+```{r}
+status <- read_csv("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/GLONAF/Belgium.csv", show_col_types = FALSE)
+status <- status[status$status=="Invasive",]
+
+names$invasive <- status$status[match(names$powo, status$taxon_corrected)]
+sum(!is.na(names$invasive))
+names$invasive[is.na(names$invasive)] <- status$status[match(names$gbif[is.na(names$invasive)], status$taxon_corrected)]
+sum(!is.na(names$invasive))
+names$invasive[is.na(names$invasive)] <- status$status[match(names$waardplant[is.na(names$invasive)], status$taxon_corrected)]
+sum(!is.na(names$invasive))
+names$invasive[is.na(names$invasive)] <- status$status[match(names$original[is.na(names$invasive)], status$taxon_corrected)]
+sum(!is.na(names$invasive))
+
+# based on the invasive alien species in Belgium document
+species_vector_invasives <- c(
+  "Acer negundo",
+  "Acer rufinerve",
+  "Ailanthus altissima",
+  "Akebia quinata",
+  "Ambrosia artemisiifolia",
+  "Amelanchier lamarckii",
+  "Aster lanceolatus",
+  "Aster novi-belgii",
+  "Aster x salignus",
+  "Azolla filiculoides",
+  "Baccharis halimifolia",
+  "Bidens frondosa",
+  "Buddleja davidii",
+  "Cabomba caroliniana",
+  "Carpobrotus spp.",
+  "Cornus sericea",
+  "Cotoneaster horizontalis",
+  "Crassula helmsii",
+  "Cyperus eragrostis",
+  "Duchesnea indica",
+  "Echinocystis lobata",
+  "Egeria densa",
+  "Elaeagnus angustifolia",
+  "Elodea canadensis",
+  "Elodea nuttallii",
+  "Epilobium ciliatum",
+  "Fallopia japonica",
+  "Fallopia sachalinensis",
+  "Fallopia x bohemica",
+  "Fraxinus pennsylvanica",
+  "Gaillardia x grandiflora",
+  "Helianthus tuberosus",
+  "Heracleum mantegazzianum",
+  "Hyacinthoides hispanica",
+  "Hydrocotyle ranunculoides",
+  "Impatiens glandulifera",
+  "Impatiens parviflora",
+  "Koenigia polystachya",
+  "Lagarosiphon major",
+  "Lemna minuta",
+  "Lonicera japonica",
+  "Ludwigia grandiflora",
+  "Ludwigia peploides",
+  "Lupinus polyphyllus",
+  "Lysichiton americanus",
+  "Mahonia aquifolium",
+  "Mimulus guttatus",
+  "Myriophyllum aquaticum",
+  "Myriophyllum heterophyllum",
+  "Oenothera spp.",
+  "Parthenocissus spp.",
+  "Phytolacca americana",
+  "Prunus laurocerasus",
+  "Prunus serotina",
+  "Quercus rubra",
+  "Rhododendron ponticum",
+  "Rhus typhina",
+  "Robinia pseudoacacia",
+  "Rosa rugosa",
+  "Rudbeckia laciniata",
+  "Senecio inaequidens",
+  "Solidago canadensis",
+  "Solidago gigantea",
+  "Spiraea alba",
+  "Spiraea douglasii",
+  "Spiraea tomentosa",
+  "Spiraea x billardii"
+)
+
+names$invasive[is.na(names$invasive) & names$powo %in% species_vector_invasives] <- "Invasive"
+
+sum(!is.na(names$invasive))
+
+#write_csv(names, "../Extra/Names/Estelle_origins.csv")
+```
+
 
 
 # 3 Basic numbers
@@ -706,7 +955,8 @@ ggplot(data=num_rel_origin, aes(x= Status, y=unique, fill= Status))+
 ```
 
 
-# ALL
+
+# POL
 # 1 START
 Remove old data
 ```{r}
@@ -796,7 +1046,7 @@ poldata <- select(poldata, -utm1, -utm5, -bijzonderheden, -aanleverdatum)
 
 #change column names
 colnames(poldata) <- c("ID","Name","Name_nl","Date","Type","SpeciesID","Number","Behaviour","Method","Stage","Gender",
-                        "Number_pictures","x","y","Long", "Lat","PictureID","gbif","genus_pol","family_pol")
+                        "Number_pictures","x","y","Long", "Lat","gbif","genus_pol","family_pol", "PictureID")
 
 # change order
 poldata <- poldata |> relocate("gbif", .before="Name")
@@ -914,7 +1164,596 @@ rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol", "pol
 
 # SAVE
 ```{r}
-write_csv(polplant,"../Data/polplant.csv")
-write_csv(poldata,"../Data/poldata.csv")
+#write_csv(polplant,"../Data/polplant.csv")
+#write_csv(poldata,"../Data/poldata.csv")
 ```
+
+
+# COMBINE
+# 1 Datasets
+```{r}
+colnames(poldata)
+poldata$dataset <- "new"
+colnames(polplant[, c(1:13,18:22, 26:27)])
+polplant$dataset <- "val"
+all <- rbind(poldata, polplant[, c(1:13,18:22, 26:28)])
+```
+
+
+```{r}
+# Convert coordinates to sf points
+coord <- all[, c("ID", "Long", "Lat")] %>%
+  st_as_sf(coords = c("Long", "Lat"), crs = 4326)
+
+# Get Belgium polygon as sf
+Belgium_df <- map_data("world") %>% filter(region == "Belgium")
+Belgium_sf <- st_as_sf(Belgium_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>% summarise(geometry = st_combine(geometry)) %>%  st_cast("POLYGON") %>%st_union() %>%st_sf()
+
+# the whole world
+world_df <- map_data("world")
+world_sf <- st_as_sf(world_df, coords = c("long", "lat"), crs = 4326) %>%
+  group_by(group) %>%
+  summarise(geometry = st_combine(geometry)) %>%
+  st_cast("POLYGON")
+bbox <- st_as_sfc(st_bbox(Belgium_sf))
+world_clipped <- st_crop(world_sf, xmin = 2.5, xmax = 6.5, ymin = 49.4, ymax = 51.6)
+
+# Create 0.05° grid and intersect with Belgium
+grid <- st_make_grid(Belgium_sf, cellsize = 0.05, square = TRUE) %>%
+  st_sf() %>%
+  st_intersection(Belgium_sf)
+
+# Count points per grid cell
+coord$obs <- 1
+grid_counts <- st_join(grid, coord, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarise(n = sum(obs, na.rm = TRUE))  # NA if no points
+
+grid_counts$n[grid_counts$n=="0"] <- NA
+grid_counts$obs_cat <- ifelse(is.na(grid_counts$n), "No data", "Data")
+grid_counts$log_n <- log10(grid_counts$n)
+
+ggplot() +
+  # Background: clipped world map
+  #geom_sf(data = world_clipped, fill = "antiquewhite", colour = NA) +
+  # Country outlines (actual borders only)
+  #geom_path(data = world_df, aes(x = long, y = lat, group = group),colour = "grey80", size = 0.2)+
+  # Belgium fill for contrast
+  geom_sf(data = Belgium_sf, fill = "antiquewhite", colour = "black", size = 0.3) +
+  # Grid cells with data (log10 scale)
+  geom_sf(data = filter(grid_counts, obs_cat == "Data"),
+          aes(fill = log_n), colour = NA) +
+  # Grid cells with no data (antiquewhite with grey frame)
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          fill = "antiquewhite", colour = "antiquewhite", size = 0.2) +
+  # Continuous fill scale
+  scale_fill_gradientn(
+    colours = viridis::viridis(100, option = "plasma"),
+    breaks = c(0, 1, 2, 3, 4),
+    labels = c("1", "10", "100", "1,000", "10,000"),
+    name = "Observations",
+    na.value = 0
+  ) +
+  # Add dummy legend for NA values
+  new_scale_fill() + 
+  geom_sf(data = filter(grid_counts, obs_cat == "No data"),
+          aes(fill = obs_cat), show.legend = TRUE, colour = NA) +
+  scale_fill_manual(    
+    guide = guide_legend(override.aes = list(colour = "antiquewhite")),
+    name = NULL,
+    values = c("No data" = "antiquewhite")
+  ) +
+  coord_sf(xlim = c(2.5, 6.5), ylim = c(49.4, 51.6), expand = FALSE) +
+  theme_pubclean() +
+  theme(legend.position = "right") +
+  labs(x = "Longitude", y = "Latitude")
+
+#ggsave("../Images/map_observations_all_belgium.png", width= 7, height= 7)
+```
+
+
+```{r}
+all$Date <- as.Date(all$Date, format= c("%d/%m/%Y"))
+
+# plot
+ggplot(all)+
+  geom_histogram(aes(x=Date), fill="lightgrey")+ scale_y_log10()+
+  theme_pubr()+
+  # Observations with a picture (blue overlay)
+  geom_histogram(data = subset(all, !is.na(PictureID)),
+                 aes(x = Date), fill = "steelblue", alpha = 1) +
+  geom_histogram(data = all[all$dataset=="val",],
+             aes(x = Date), fill = "darkblue", alpha = 1)+
+  ylab("Number of observations")+
+  xlab("Year")
+  
+
+ggsave("../Images/all_observations_time.png", width= 7, height= 5)
+```
+
+
+# ESTELLE
+## Names
+```{r}
+plants <- read_csv("C:/Users/u0166342/OneDrive - KU Leuven/Doctoraat/Teaching assistant/Thesis/2024-2025/Estelle/Data/list_plant_status.csv")
+
+names <- unique(plants[,1:4])
+names$waardplant <- gsub("\\b(spec\\.)\\b", "", names$original_name)
+names$waardplant <- trimws(names$waardplant)
+indet <- names$waardplant[grepl(" indet.", names$waardplant)]
+names$waardplant <- gsub(" indet.","", names$waardplant)
+
+gbif <- name_backbone_checklist(names$waardplant)
+
+# check which are not plant in gbif
+non_plants <- gbif[!gbif$kingdom =="Plantae",]
+non_plants <- non_plants[!is.na(non_plants$verbatim_name),]
+
+# check in powo 
+names_powo <- match_knms(names$waardplant)
+names_powo <- names_powo$results
+
+# safe depending on types
+safe_names <- c()
+multiple <- c()
+none <- c()
+# results can be false true multiple_matches or ""
+# all together also 1697
+for(i in 1: length(names_powo)){
+  if(names_powo[[i]][[2]]== "true"){
+    safe_names <- rbind(safe_names, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="multiple_matches"){
+    multiple <- rbind(multiple, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="false"){
+    none <- rbind(none, names_powo[[i]][[1]])
+  }
+}
+
+################
+# SAFE
+# give powo names also to name list
+names$powo <- safe_names[match(names$waardplant, safe_names)]
+names$genus <- gbif$genus[match(names$powo, gbif$canonicalName)]
+names$family <- gbif$family[match(names$powo, gbif$canonicalName)]
+
+
+
+################
+# NONE
+# search powo and store results in list if we find a direct match
+none_powo <- list()
+saved = F
+if(!saved){
+for(i in 1: length(none)){
+    # powo
+    r<- search_powo(none[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      none_powo[[i]] <- tmp
+    } else {
+      none_powo[[i]] <- NA
+    }
+    #write_rds(none_powo, "../Extra/Names/powo_no_link.R")
+}
+} else {
+  none_powo <- read_rds("../Extra/Names/powo_no_link.R")
+}
+
+# only get all with data
+none_name <- none[!lengths(none_powo)<2]
+none_powo_all <- none_powo
+none_powo <- none_powo[!lengths(none_powo)<2]
+
+# get the correct and accepted names
+none_safe <- data.frame(old = character(), new= character(), accepted= character())
+for(i in 1: length(none_powo)){
+  dat <- none_powo[[i]]
+  acc_name <- NA
+  acc <- NA
+  old <- NA
+  if(nrow(dat) == 1){
+    none_safe <- rbind(none_safe, data.frame(old= none_name[i], new = dat$name, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$accepted==T]
+    acc <- dat$accepted[dat$accepted==T]
+    old <- none_name[i]
+    none_safe <- rbind(none_safe, data.frame(old= old, new = acc_name, accepted= acc))
+  }
+}
+
+dup <- none_safe[duplicated(none_safe$old)| duplicated(none_safe$old, fromLast=T),]
+remove <- dup[c(1,2),]
+none_safe <- none_safe[!(none_safe$old %in% remove$old & none_safe$new %in% remove$new),]
+
+none_safe[none_safe$old %in% c("Astereae","Eupatorieae","Heliantheae"), 2:3] <- NA
+names$powo[is.na(names$powo)] <- none_safe$new[match(names$waardplant[is.na(names$powo)], none_safe$old)]
+
+
+################
+# MULTIPLE
+# search powo and store results in list if we find a direct match
+multiple_powo <- list()
+if(!saved){
+for(i in 1: length(multiple)){
+    # powo
+    r<- search_powo(multiple[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      multiple_powo[[i]] <- tmp
+    } else {
+      multiple_powo[[i]] <- NA
+    }
+    write_rds(multiple_powo, "../Extra/Names/powo_multiple.R")
+}} else {
+  multiple_powo <- read_rds("../Extra/Names/powo_multiple.R")
+}
+
+# only get all with data
+multiple_name <- multiple[!lengths(multiple_powo)<2]
+multiple_powo_all <- multiple_powo
+multiple_powo <- multiple_powo[!lengths(multiple_powo)<2]
+
+# get the correct and accepted names
+multiple_safe <- data.frame(old = character(), new= character(), accepted= character())
+for(i in 1: length(multiple_powo)){
+  dat <- multiple_powo[[i]]
+  acc_name <- NA
+  acc <- NA
+  old <- NA
+  if(nrow(dat) == 1){
+    multiple_safe <- rbind(multiple_safe, data.frame(old= multiple_name[i], new = dat$name, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$accepted==T]
+    acc_name <- ifelse(any(acc_name %in% multiple_name[i]), acc_name[match(acc_name, multiple_name[i])], acc_name)
+    acc <- dat$accepted[dat$accepted==T]
+    acc <- ifelse(length(acc)>1, any(dat$accepted[dat$name %in% acc_name]), acc)
+    old <- multiple_name[i]
+    multiple_safe <- rbind(multiple_safe, data.frame(old= old, new = acc_name, accepted= acc))
+  }
+}
+
+names$powo[is.na(names$powo)] <- multiple_safe$new[match(names$waardplant[is.na(names$powo)], multiple_safe$old)]
+
+# check which not yet
+multiple_not <- multiple_safe[is.na(multiple_safe$new),]
+# adapt --> all 18 checked
+multiple_not$new <- multiple_not$old
+
+# safe
+names$powo[is.na(names$powo)] <- multiple_not$new[match(names$waardplant[is.na(names$powo)], multiple_not$old)]
+```
+
+
+Check remaining names
+```{r}
+# check and remove some names incorrectly added
+lacking <- names[is.na(names$powo),]
+lacking <- lacking[order(lacking$waardplant),]
+lacking <- lacking[, c(1,2,5,6)]
+
+
+lacking$powo <- c("Aconitum × cammarum","Aesculus x carnea","Allium christophii","Allium vineale","Eriocapitella × hybrida",
+                  "Arctium minus","Arctium x ambiguum","Berberis × ottawensis","Brassica napus","Buddleja x weyeriana",
+                  "Calamintha nepeta","Campylopus introflexus","Caryopteris x clandonensis","Centaurea cyanus",
+                  "Citrus x aurantium","Clinopodium nepeta","Crocus x helenae","Crocus x luteus","Echinops banaticus","Erica x darleyensis",
+                  "Erodium cicutarium","Fallopia x bohemica","Ficaria verna","Fragaria x ananassa","Gaillardia x grandiflora",
+                  "Geranium x cantabrigiense","Geranium x magnificum","Geranium x oxonianum","Helianthus x laetiflorus",
+                  "Heracleum sphondylium","Hyacinthoides x massartiana","Hyacinthoides x massartiana","Hypericum x desetangsii",
+                  "Knautia arvensis","Lonicera fragrantissima","Medicago x varia","Mentha x verticillata",
+                  "Mentha x piperita","Mentha x rotundifolia", "Narcissus pseudonarcissus",
+                  "Nepeta x faassenii","Ononis spinosa","Osmanthus x burkwoodii","Petunia × atkinsiana", "Platanus x hispanica",
+                  "Populus x canadensis","Poterium sanguisorba","Prunus avium","Prunus domestica",
+                  "Prunus x fruticans","Rhododendron x praecox","Ribes x nidigrolaria","Rubus sect. Rubus","Salix babylonica",
+                  "Salix cinerea",
+                  "Salix x ambigua","Salix x friesiana","Salix x guinieri","Salix x reichardtii","Salix x rubra","Salix × pendulina nothof. tristis",
+                  "Salix gmelinii","Salix gmelinii","Salvia x sylvestris",
+                  "Solanum nigrum","Symphoricarpos x chenaultii","Symphyotrichum x versicolor","Symphytum grandiflorum",
+                  "Symphytum x hidcotense","Symphytum x uplandicum","Taraxacum sect. Taraxacum","Teucrium x lucidrys",
+                  "Tilia x europaea","Glandularia × hybrida","Veronica chamaedrys","Vicia sativa","Vicia tetrasperma" ,"Viola canina","Viola x wittrockiana"
+                  ,"Vitis vinifera")
+
+
+names$powo[is.na(names$powo)] <- lacking$powo[match(names$original_name[is.na(names$powo)], lacking$original_name)]
+```
+
+Again GBIF
+```{r}
+names$gbif <- gbif$species[match(names$waardplant, gbif$verbatim_name)]
+
+# check differences
+dif <- names[names$powo != names$gbif,]
+dif <- dif[!is.na(dif$waardplant),]
+
+names$powo[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
+```
+
+
+Genus
+```{r}
+# which have no genus or family
+no_genus <- names[is.na(names$genus),]
+no_family <- names[is.na(names$family),]
+
+# first use gbif again
+gbif <-  name_backbone_checklist(no_genus$powo)
+no_genus$genus <- gbif$genus
+no_genus$family <- gbif$family
+
+# assign
+names[is.na(names$genus),] <- no_genus
+
+# no genus and family
+no_genus <- names[is.na(names$genus) & is.na(names$family),]
+no_genus$genus <- "Salix"
+no_genus$family <- "Salicaceae"
+names[is.na(names$genus) & is.na(names$family),] <- no_genus
+
+
+# no genus
+no_genus <- names[is.na(names$genus),]
+vegdata <- vegdata::parse.taxa(no_genus$powo)
+no_genus$genus <- vegdata$genus
+names[is.na(names$genus),] <- no_genus
+
+
+```
+
+
+Check remaining names
+```{r}
+# some changes
+names <- names[!names$powo =="Micrasterias decemdentata", ]
+names$genus[names$waardplant == names$family] <- NA
+names$genus[names$waardplant =="Bambusoideae"] <- NA
+names[names$waardplant=="Lotus glaber", 6:7] <- data.frame("Lotus tenuis","Lotus")
+names[names$waardplant=="Aronia", 7] <- data.frame("Aronia")
+names[names$waardplant=="Stellaria", 7] <- data.frame("Stellaria")
+names[names$waardplant=="Pastinaca", 7:6] <- data.frame("Pastinaca","Apiaceae")
+names[names$waardplant=="Anchusa arvensis", 6:7] <- data.frame("Anchusa arvensis","Anchusa")
+names[names$waardplant=="Trifolium", 7] <- data.frame("Trifolium")
+names[names$waardplant=="Fallopia japonica + Fallopia sachalinensis + Fallopia x bohemica", 6:7] <- data.frame("Reynoutria × bohemica", "Reynoutria")
+names[names$waardplant=="Eriobotrya japonica", 6:7] <- data.frame("Eriobotrya japonica", "Eriobotrya")
+names[names$waardplant=="Perovskia ", 6] <- data.frame("Salvia")
+names[names$waardplant=="Lychnis", 6] <- data.frame("Silene")
+names[names$waardplant=="Silene armeria", 7] <- data.frame("Silene")
+names[names$powo=="Salix alba", 7] <- data.frame("Salix")
+names[names$powo=="Cnicus", 7] <- data.frame("Centaurea")
+names[names$powo=="Convolvulus soldanella", 6:7] <- data.frame("Calystegia soldanella","Calystegia")
+names[names$powo=="Inula conyzae", 6:7] <- data.frame("Pentanema squarrosum","Pentanema")
+names[names$powo=="Leontodon saxatilis", 7] <- data.frame("Leontodon")
+names[names$powo=="Peucedanum palustre", 7] <- data.frame("Peucedanum")
+names[names$powo=="Potentilla rupestris", 6:7] <- data.frame("Drymocallis rupestris","Drymocallis")
+names[names$powo=="Sedum sediforme", 6:7] <- data.frame("Petrosedum sediforme","Petrosedum")
+names[names$powo=="Sedum rupestre", 6:7] <- data.frame("Petrosedum rupestre","Petrosedum")
+names[names$powo=="Sorbus intermedia", 6:7] <- data.frame("Scandosorbus intermedia","Scandosorbus")
+names[names$powo=="Brasica and Sinapis", 6] <- data.frame("Brassicaceae")
+```
+
+
+## Origin
+```{r}
+status <- read_csv("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/GLONAF/Belgium.csv", show_col_types = FALSE)
+unique(status$status)
+names$source <- NA
+# assign Belgium
+names$status <- status$status[match(names$powo, status$taxon_corrected)]
+names$source[!is.na(names$status)] <- "GloNAF"
+sum(!is.na(names$status))
+```
+
+```{r}
+status <- readxl::read_excel("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/Species names/Veronika_name_correction.xlsx")
+extra <- status[status$Status.checked.VK =="extra",]
+extra <- extra[!duplicated(extra$`Aggregated name`),]
+status <- status[status$Region=="Belgium",]
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$powo[is.na(names$status)], status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$gbif[is.na(names$status)] , status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$original_name[is.na(names$status)] , status$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$powo[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$gbif[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$Status.checked.VK[match(names$original_name[is.na(names$status)] , status$`Original EVA name`)]
+sum(!is.na(names$status))
+
+# assign extra-European
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$powo[is.na(names$status)] , extra$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$original_name[is.na(names$status)] , extra$`Aggregated name`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$Status.checked.VK[match(names$powo[is.na(names$status)] , extra$`Original EVA name`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Kalusova"
+```
+
+
+```{r}
+status <- readxl::read_excel("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/Species names/Irena_taxa_update.xlsx")
+extra <- status[status$statusNew =="extra",]
+extra <- extra[!duplicated(extra$species),]
+
+status <- status[status$Region=="Belgium",]
+
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)], status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original_name[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original_name[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+
+# assign extra-European
+names$status[is.na(names$status)] <- extra$statusNew[match(names$powo[is.na(names$status)] , extra$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$statusNew[match(names$original_name[is.na(names$status)] , extra$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- extra$statusNew[match(names$powo[is.na(names$status)] , extra$`Matched concept`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Kalusova"
+```
+
+
+
+
+
+```{r}
+species_mab <- read.delim("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/Names/Aliens/taxon.txt")
+status_mab <- read.delim("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/Names/Aliens/distribution.txt")
+
+species_mab$species <- vegdata::taxname.removeAuthors(species_mab$scientificName)
+
+status<- species_mab
+status$statusNew <- "Alien"
+
+# assign Belgium
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)], status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original_name[is.na(names$status)] , status$species)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$powo[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$gbif[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+names$status[is.na(names$status)] <- status$statusNew[match(names$original_name[is.na(names$status)] , status$`Matched concept`)]
+sum(!is.na(names$status))
+
+names$source[!(is.na(names$status)) & is.na(names$source)] <- "Manual alien plants Belgium"
+
+```
+
+
+
+```{r}
+names$status[names$status %in% c("Naturalized","Invasive","intra","extra")] <- "Alien"
+names$status[names$status %in% c("native")] <- "Native"
+
+
+check <- names[!is.na(names$status),]
+
+
+# here most of my assignments seem correct, so keep these
+control <- check[check$status_estelle != check$status,]
+
+# remaining
+remaining <-names[is.na(names$status),]
+remaining_aliens <- remaining[remaining$status_estelle =="Alien",]
+# I checked some, all were indeed alien
+
+# Assign
+names$source[is.na(names$source)] <- "waarnemingen"
+names$status[is.na(names$status)] <- names$status_estelle[is.na(names$status)]
+
+names <- names[, -c(9)]
+names <- names[, -c(5)]
+colnames(names)[5] <- 'name_willem'
+colnames(names)[8] <- 'status_willem'
+```
+
+```{r}
+status <- read_csv("C:/Users/u0166342/Documents/Doctoraat/Observation/Extra/GLONAF/Belgium.csv", show_col_types = FALSE)
+status <- status[status$status=="Invasive",]
+
+names$invasive_willem <- status$status[match(names$name_willem, status$taxon_corrected)]
+
+# based on the invasive alien species in Belgium document
+species_vector_invasives <- c(
+  "Acer negundo",
+  "Acer rufinerve",
+  "Ailanthus altissima",
+  "Akebia quinata",
+  "Ambrosia artemisiifolia",
+  "Amelanchier lamarckii",
+  "Aster lanceolatus",
+  "Aster novi-belgii",
+  "Aster x salignus",
+  "Azolla filiculoides",
+  "Baccharis halimifolia",
+  "Bidens frondosa",
+  "Buddleja davidii",
+  "Cabomba caroliniana",
+  "Carpobrotus spp.",
+  "Cornus sericea",
+  "Cotoneaster horizontalis",
+  "Crassula helmsii",
+  "Cyperus eragrostis",
+  "Duchesnea indica",
+  "Echinocystis lobata",
+  "Egeria densa",
+  "Elaeagnus angustifolia",
+  "Elodea canadensis",
+  "Elodea nuttallii",
+  "Epilobium ciliatum",
+  "Fallopia japonica",
+  "Fallopia sachalinensis",
+  "Fallopia x bohemica",
+  "Fraxinus pennsylvanica",
+  "Gaillardia x grandiflora",
+  "Helianthus tuberosus",
+  "Heracleum mantegazzianum",
+  "Hyacinthoides hispanica",
+  "Hydrocotyle ranunculoides",
+  "Impatiens glandulifera",
+  "Impatiens parviflora",
+  "Koenigia polystachya",
+  "Lagarosiphon major",
+  "Lemna minuta",
+  "Lonicera japonica",
+  "Ludwigia grandiflora",
+  "Ludwigia peploides",
+  "Lupinus polyphyllus",
+  "Lysichiton americanus",
+  "Mahonia aquifolium",
+  "Mimulus guttatus",
+  "Myriophyllum aquaticum",
+  "Myriophyllum heterophyllum",
+  "Oenothera spp.",
+  "Parthenocissus spp.",
+  "Phytolacca americana",
+  "Prunus laurocerasus",
+  "Prunus serotina",
+  "Quercus rubra",
+  "Rhododendron ponticum",
+  "Rhus typhina",
+  "Robinia pseudoacacia",
+  "Rosa rugosa",
+  "Rudbeckia laciniata",
+  "Senecio inaequidens",
+  "Solidago canadensis",
+  "Solidago gigantea",
+  "Spiraea alba",
+  "Spiraea douglasii",
+  "Spiraea tomentosa",
+  "Spiraea x billardii"
+)
+
+names$invasive_willem[is.na(names$invasive_willem) & names$name_willem %in% species_vector_invasives] <- "Invasive"
+
+sum(!is.na(names$invasive_willem))
+
+write_csv(names, "../Extra/Names/Estelle_origins.csv")
+```
+
 
