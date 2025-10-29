@@ -62,6 +62,7 @@ names <- names[!names$waardplant %in% non_plants_powo$verbatim_name,]
 names_powo <- match_knms(names$waardplant)
 names_powo <- names_powo$results
 
+
 # safe depending on types
 safe_names <- c()
 multiple <- c()
@@ -78,10 +79,60 @@ for(i in 1: length(names_powo)){
   }
 }
 
+i=1
+
 ################
 # SAFE
+safe_powo <- list()
+saved=T
+if(!saved){
+for(i in 1: length(safe_names)){
+    # powo
+    r<- search_powo(safe_names[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      safe_powo[[i]] <- tmp
+    } else {
+      safe_powo[[i]] <- NA
+    }
+    #write_rds(safe_powo, "../Extra/Names/powo_synonyms.R")
+}
+  } else {
+  safe_powo <- read_rds("../Extra/Names/powo_synonyms.R")
+}
+i=11
+
+not_safe_names <- safe_names[!lengths(safe_powo) > 2]
+not_saf_names_powo <- safe_powo[!lengths(safe_powo) > 2]
+safe_names <- safe_names[!lengths(safe_powo) <2]
+safe_powo <- safe_powo[!lengths(safe_powo) < 2]
+
+
+# get the correct and accepted names
+synonym_safe <- data.frame(old = character(), new= character(), accepted= character())
+for(i in 1: length(safe_powo)){
+  dat <- safe_powo[[i]]
+  acc_name <- NA
+  acc <- NA
+  old <- NA
+  if(nrow(dat) == 1){
+    synonym_safe <- rbind(synonym_safe, data.frame(old= safe_names[i], new = dat$name, accepted= dat$accepted))
+  } else {
+    acc_name <- dat$name[dat$accepted==T]
+    acc_name <- ifelse(any(acc_name %in% safe_names[i]), acc_name[acc_name %in% safe_names[i]], acc_name)
+    acc <- dat$accepted[dat$accepted==T]
+    acc <- ifelse(length(acc)>1, any(dat$accepted[dat$name %in% acc_name]), acc)
+    old <- safe_names[i]
+    synonym_safe <- rbind(synonym_safe, data.frame(old= old, new = acc_name, accepted= acc))
+  }
+}
+
+
 # give powo names also to name list
-names$powo <- safe_names[match(names$waardplant, safe_names)]
+names$powo <- synonym_safe$new[match(names$waardplant, synonym_safe$old)]
 names$genus <- gbif$genus[match(names$powo, gbif$canonicalName)]
 names$family <- gbif$family[match(names$powo, gbif$canonicalName)]
 
@@ -199,6 +250,25 @@ multiple_not$new <- c("Arum","Camellia","Centaurea nigra","Cirsium palustre","Er
 names$powo[is.na(names$powo)] <- multiple_not$new[match(names$waardplant[is.na(names$powo)], multiple_not$old)]
 ```
 
+Check not safe names
+```{r}
+not_safe_gbif <- name_backbone_checklist(not_safe_names)
+
+multiple_species <- not_safe_gbif[grepl("\\+", not_safe_gbif$verbatim_name),]
+
+# check with gbif
+not_safe_gbif <- name_backbone_checklist(not_safe_names)
+not_safe_gbif_acc <- not_safe_gbif[!is.na(not_safe_gbif$status),]
+
+# give accepted names
+names$powo[names$waardplant %in% not_safe_gbif_acc$verbatim_name] <- 
+  not_safe_gbif_acc$scientificName[match(names$waardplant[names$waardplant %in% not_safe_gbif_acc$verbatim_name], not_safe_gbif_acc$verbatim_name)]
+
+
+not_safe_gbif <- not_safe_gbif[is.na(not_safe_gbif$status),]
+```
+
+
 
 Check remaining names
 ```{r}
@@ -217,20 +287,19 @@ lacking$powo <- c("Aconitum × cammarum","Aesculus x carnea","Allium christophii
                   "Nepeta x faassenii","Ononis spinosa subsp. procurrens","Osmanthus x burkwoodii","Petunia × atkinsiana",NA, "Platanus x hispanica",
                   "Populus x canadensis","Poterium sanguisorba subsp. sanguisorba","Prunus avium subsp. avium","Prunus domestica subsp. domestica",
                   "Prunus x fruticans","Rhododendron x praecox","Ribes x nidigrolaria","Rosa subsect. Caninae","Rosa subsect. Rubigineae",
-                  "Rubus sect. Corylifolii","Rubus sect. Rubus","Rubus sect. Rubus","Salix babylonica","Salix cinerea subsp. cinerea","Salix hybrid s.l.",
-                  "Salix x ambigua","Salix x friesiana","Salix x guinieri","Salix x reichardtii","Salix x rubra","Salix × pendulina nothof. tristis",
-                  "Salix gmelinii","Salix gmelinii","Salvia x sylvestris","Scilla sect. Chionodoxa","Sempervivum sect. Jovibarba",
-                  "Solanum nigrum subsp. nigrum","Symphoricarpos x chenaultii","Symphyotrichum x versicolor","Symphytum grandiflorum",
-                  "Symphytum x hidcotense","Symphytum x uplandicum","Taraxacum officinale s.l.","Taraxacum sect. Ruderalia","Teucrium x lucidrys",
-                  "Tilia x europaea","Glandularia × hybrida","Veronica chamaedrys var. chamaedrys","Vicia sativa subsp. angustifolia",
+                  "Rubus sect. Corylifolii","Rubus sect. Rubus","Rubus sect. Rubus","Salix","Salix alba","Salix babylonica","Salix cinerea subsp. cinerea",
+                  "Salix hybrid s.l.","Salix x ambigua","Salix x friesiana","Salix x guinieri","Salix x reichardtii","Salix x rubra",
+                  "Salix × pendulina nothof. tristis","Salix gmelinii","Salix gmelinii","Salvia x sylvestris","Scilla sect. Chionodoxa",
+                  "Sempervivum sect. Jovibarba","Solanum nigrum subsp. nigrum","Symphoricarpos x chenaultii","Symphyotrichum x versicolor",
+                  "Symphytum grandiflorum", "Symphytum x hidcotense","Symphytum x uplandicum","Taraxacum officinale s.l.","Taraxacum sect. Ruderalia",
+                  "Teucrium x lucidrys","Tilia x europaea","Glandularia × hybrida","Veronica chamaedrys var. chamaedrys","Vicia sativa subsp. angustifolia",
                   "Vicia tetrasperma subsp. tetrasperma" ,"Viola canina","Viola x wittrockiana","Vitis vinifera subsp. vinifera")
 
 names$powo[is.na(names$powo)] <- lacking$powo
 names <- names[!is.na(names$powo),]
-
-names$powo[names$powo=="Salix alba agg."] <- "Salix alba"
-names$powo[names$powo =="Brassica spec. + Sinapis"] <- "Brasica and Sinapis"
+names$powo[names$powo =="Brassica spec. + Sinapis"] <- "Brasica"
 ```
+
 
 Again GBIF
 ```{r}
@@ -255,14 +324,59 @@ gbif_powo_subsp[!gbif_powo_subsp$verbatim_name %in% gbif_powo_subsp$vegdata, ]
 # assign names for subspecies again
 dif$gbif[dif$powo %in% gbif_powo_subsp$verbatim_name] <- gbif_powo_subsp$vegdata
 
-
 # assign to names vector
 names$powo[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
 names$gbif[names$waardplant %in% dif$waardplant] <- dif$gbif[match(names$waardplant[names$waardplant %in% dif$waardplant],dif$waardplant)]
 
+
+
+gbif_again <- name_backbone_checklist(names$powo)
+
+# look at synonyms
+synonyms = gbif_again[gbif_again$status != "ACCEPTED",]
+synonyms <- synonyms[!is.na(synonyms$usageKey),]
+synonyms <- synonyms[!is.na(synonyms$acceptedUsageKey),]
+
+synonyms_accepted <- name_usage(synonyms$acceptedUsageKey[1])$data
+
+for( i in 2: nrow(synonyms)){
+  tmp <- name_usage(synonyms$acceptedUsageKey[i])$data
+  synonyms_accepted <- bind_rows(synonyms_accepted, tmp)
+}
+
+# get subspecies
+synonyms_accepted_subsp <-  synonyms_accepted[ synonyms_accepted$rank %in% c("SUBSPECIES" , "VARIETY"),]
+# we will adapt their cononical names
+vegdata_name <- vegdata::parse.taxa(synonyms_accepted_subsp$scientificName)
+synonyms_accepted$canonicalName[synonyms_accepted$rank %in% c("SUBSPECIES" , "VARIETY")] <- vegdata_name$scientificName
+# adapt in overall matrix
+synonyms$canonicalName <- synonyms_accepted$canonicalName
+
+# assign to name matrix
+names$gbif[names$powo %in% synonyms$verbatim_name] <- synonyms$canonicalName[match(names$powo[names$powo %in% synonyms$verbatim_name], synonyms$verbatim_name )]
+names$powo[names$powo %in% synonyms$verbatim_name] <- synonyms$canonicalName[match(names$powo[names$powo %in% synonyms$verbatim_name],
+                                                                                   synonyms$verbatim_name )]
+
+# look whether all synonyms are changed
+gbif_again <- name_backbone_checklist(names$powo)
+synonyms = gbif_again[gbif_again$status != "ACCEPTED",]
+synonyms <- synonyms[!is.na(synonyms$usageKey),]
+# these are all doubtful
+
 # check again for genera
 names$genus[is.na(names$genus)] <- gbif_powo$genus[match(names$powo[is.na(names$genus)], gbif_powo$verbatim_name)]
 names$family[is.na(names$family)] <- gbif_powo$family[match(names$powo[is.na(names$family)], gbif_powo$verbatim_name)]
+# check again for genera
+names$genus[is.na(names$genus)] <- gbif_again$genus[match(names$powo[is.na(names$genus)], gbif_again$verbatim_name)]
+names$family[is.na(names$family)] <- gbif_again$family[match(names$powo[is.na(names$family)], gbif_again$verbatim_name)]
+
+# check first with powo
+genus_powo <- tidy(match_knms(names$powo[is.na(names$genus)]))
+genus_powo <- genus_powo[!is.na(genus_powo$ipni_id),]
+genus_powo$genus <- vegdata::parse.taxa(genus_powo$submitted)$genus
+
+names$genus[is.na(names$genus)] <- genus_powo$submitted[match(names$powo[is.na(names$genus)], genus_powo$submitted)]
+
 ```
 
 
@@ -274,14 +388,17 @@ no_family <- names[is.na(names$family),]
 
 # first use gbif again
 gbif <-  name_backbone_checklist(no_genus$powo)
-no_genus$genus <- gbif$genus
+# no longer relevant because previous move
+#no_genus$genus <- gbif$genus
 no_genus$family <- gbif$family
 
 # assign
 names[is.na(names$genus),] <- no_genus
 
+no_family <- names[is.na(names$family),]
+
 # no genus (and no family)
-no_genus <- names[is.na(names$genus) & is.na(names$family),]
+no_genus <- names[is.na(names$family),]
 
 ##########
 # Family
@@ -300,7 +417,7 @@ for(i in 1: nrow(no_genus)){
     } else {
       no_family_list[[i]] <- NA
     }
-    #write_rds(no_family_list, "../Extra/Names/no_family_list.R")
+    write_rds(no_family_list, "../Extra/Names/no_family_list.R")
 }
   } else {
   no_family_list_test <- read_rds("../Extra/Names/no_family_list.R")
@@ -335,17 +452,55 @@ for(i in 1: length(no_family_list)){
 
 names$family[is.na(names$family)] <- family_safe$family[match(names$powo[is.na(names$family)], family_safe$name)]
 
+# check manyally
+check <- names[is.na(names$family),] 
+family_add <- c("Asteraceae","Asteraceae","Brassicaceae","Brassicaceae","Asteraceae","Asteraceae","Asteraceae","Ranunculaceae", NA, NA)
+names$family[is.na(names$family)] <- family_add 
+# wrong species names
+wrong <- c("Brassica nigra", "Helleborus orientalis agg.")
+names$powo[names$waardplant %in% wrong] <- c("Mutarda nigra","Helleborus orientalis")
 
+#remove the errors
+names <- names[!is.na(names$family),]
+names <- names[!names$original=="Plantae indet.",]
 
 ##########
+# no genus
+no_genus <- names[is.na(names$genus),]
+no_genus <- no_genus[!grepl("indet.",no_genus$original),]
+
+##########
+# Family
+saved=F
+no_family_list <- list()
+if(!saved){
+for(i in 1: nrow(no_genus)){
+    # powo
+    r<- search_powo(no_genus$powo[i])
+    # only if there is a match store result in data, otherwise put NA
+    if(length(r$results)>0){
+      # make dataframe
+      tmp <- tidy(r)
+      # add to list
+      no_family_list[[i]] <- tmp
+    } else {
+      no_family_list[[i]] <- NA
+    }
+    write_rds(no_family_list, "../Extra/Names/no_genus_list.R")
+}
+  } else {
+  no_family_list_test <- read_rds("../Extra/Names/no_genus_list.R")
+  }
+
+
 # Genus
-no_genus_list <- no_family_list_all
+no_genus_list <- no_family_list
 
 # only get all with data
 no_genus_name <- no_genus[!lengths(no_genus_list)<2,]
 no_genus_list_all <- no_genus_list
 no_genus_list <- no_genus_list[!lengths(no_genus_list)<2]
-
+i=2
 # get the correct and accepted names
 genus_safe <- data.frame(name = character(), genus= character(), accepted= character())
 for(i in 1: length(no_genus_list)){
@@ -355,7 +510,7 @@ for(i in 1: length(no_genus_list)){
   name <- NA
   if(nrow(dat) == 1){
     acc <- ifelse(dat$rank=="Genus", dat$name, NA)
-    multiple_safe <- rbind(genus_safe, data.frame(name= no_genus_name$powo[i], genus = acc, accepted= dat$accepted))
+    genus_safe <- rbind(genus_safe, data.frame(name= no_genus_name$powo[i], genus = acc, accepted= dat$accepted))
   } else {
     acc_name <- dat$name[dat$rank=="Genus" & dat$accepted=="TRUE"]
     freq <- table(acc_name)
@@ -372,28 +527,21 @@ for(i in 1: length(no_genus_list)){
 
 # assign
 names$genus[is.na(names$genus)] <- genus_safe$genus[match(names$powo[is.na(names$genus)], genus_safe$name)]
+
+
+# check manyally
+no_genus <- names[is.na(names$genus),] 
+no_genus <- no_genus[!grepl("indet.",no_genus$original),]
+
+no_genus$genus <- c(NA,"× Brassarda","Mutarda",NA,NA, "Anacis","Helleborus")
+names$genus[is.na(names$genus) & names$original %in% no_genus$original] <- 
+  no_genus$genus[match(names$original[is.na(names$genus)& names$original %in% no_genus$original] , no_genus$original)]
 ```
 
 
 Check remaining names
 ```{r}
-# check and remove some names incorrectly added
-lacking <- names[is.na(names$genus) & is.na(names$family),]
-
-lacking$genus <- c(NA,NA,NA,NA, NA, "Anacis","Helleborus","Salix")
-
-names$genus[is.na(names$genus) & is.na(names$family)] <- lacking$genus
-
-lacking <- names[is.na(names$family),]
-
-lacking$family <- c("Asteraceae","Asteraceae",NA,"Asteraceae", 
-                    "Asteraceae","Ranunculaceae", "Asteraceae",
-                    "Desmidiaceae", "Salicaceae")
-
-names$family[is.na(names$family)] <- lacking$family
-
 # some changes
-names <- names[!names$powo =="Micrasterias decemdentata", ]
 names$genus[names$waardplant == names$family] <- NA
 names$genus[names$waardplant =="Bambusoideae"] <- NA
 names[names$waardplant=="Lotus glaber", 4:5] <- data.frame("Lotus tenuis","Lotus")
@@ -418,6 +566,7 @@ names[names$powo=="Sedum sediforme", 4:5] <- data.frame("Petrosedum sediforme","
 names[names$powo=="Sedum rupestre", 4:5] <- data.frame("Petrosedum rupestre","Petrosedum")
 names[names$powo=="Sorbus intermedia", 4:5] <- data.frame("Scandosorbus intermedia","Scandosorbus")
 names[names$powo=="Brasica and Sinapis", 6] <- data.frame("Brassicaceae")
+names[names$original =="Sinapis arvensis", 4:5] <- data.frame("Mutarda arvensis", "Mutarda")
 ```
 
 
@@ -441,6 +590,7 @@ polplant$plant_level[is.na(polplant$plant_level)] <- ifelse(polplant$genus_plant
 Remove some data
 ```{r}
 rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant")))
+write_csv(names, "../Extra/Names/plant_names.csv")
 ```
 
 
@@ -487,6 +637,7 @@ pictures_polplant <- read.csv2("../Data/2024-145_BE_metWP_sws+metToestemming_lin
 
 # assign names
 pictures_polplant$species <- polplant$gbif[match(pictures_polplant$wnm_id, polplant$id)]
+sum(!duplicated(pictures_polplant$wnm_id))
 
 # check all removed species
 removed <- pictures_polplant[(is.na(pictures_polplant$species)),]
@@ -498,9 +649,12 @@ length(unique(pictures_polplant$wnm_id))/ length(pictures_polplant$foto_id)
 
 # assign link picture to polplant
 polplant$picture_id <- pictures_polplant$foto_id[match(polplant$id, pictures_polplant$wnm_id)]
+sum(!is.na(polplant$picture_id))
 # check how many of the species have pictures
 # about 20% of the observations have images
 sum(!is.na(polplant$picture_id))/ length(polplant$id)
+
+#write_csv(pictures_polplant, "../Data/polplant_pictures.csv")
 ```
 
 
@@ -1031,6 +1185,8 @@ poldata$picture_id <- pictures_poldata$foto_id[match(poldata$id, pictures_poldat
 # check how many of the species have pictures
 # about 75% of the observations have images
 sum(!is.na(poldata$picture_id))/ length(poldata$id)
+
+write_csv(pictures_poldata, "../Data/poldata_pictures.csv")
 ```
 
 
@@ -1164,7 +1320,7 @@ rm(list = setdiff(ls(),c("names", "remove_waardplanten", "polplant", "pol", "pol
 
 # SAVE
 ```{r}
-#write_csv(polplant,"../Data/polplant.csv")
+write_csv(polplant,"../Data/polplant.csv")
 #write_csv(poldata,"../Data/poldata.csv")
 ```
 
@@ -1254,6 +1410,7 @@ ggplot() +
 
 
 ```{r}
+# change to date
 all$Date <- as.Date(all$Date, format= c("%d/%m/%Y"))
 
 # plot

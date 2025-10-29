@@ -1,0 +1,75 @@
+---
+title: "GBIF"
+author: "Willem"
+date: "2025-10-09"
+output: html_document
+---
+
+# LOAD
+Packages
+```{r}
+library(httr)
+library(rvest)
+library(xml2)
+library(tidyverse)
+```
+
+
+Data show idea
+```{r}
+# get Andrena hatorfiana data for the Netherlands in 2025
+test <- read.delim("C:/Users/u0166342/Downloads/0064385-250920141307145/occurrence.txt", header = TRUE,
+sep = "\t", quote = "", stringsAsFactors = FALSE)
+
+# remove empty columns
+data <- test[ , apply(test, 2, function(x) !all(is.na(x)))]
+obs_data <- data[grepl( "observation.org",data$occurrenceID),]
+i=55
+
+save_host <- data.frame(GBIF_ID = numeric(), host = character())
+for(i in 1: length(obs_data$gbifID)){
+  url <- obs_data$occurrenceID[i]
+  # get response from observation.org
+  page <- read_html(url)
+  Sys.sleep(2)
+  # Then extract e.g. title, observation data, etc.
+  title <- page %>% html_node("title") %>% html_text()
+  title
+
+  # here you can look to specifics in the data
+  # x <- xml_child(page, 2)
+  
+  # Extract tables (if present)
+  tables <- page %>% html_table()
+  tables <- tables[[2]]
+  location <- (tables$X1) %in% c("On/in")
+  tables <- tables[location,]
+  host <- ifelse(nrow(tables)>0, tables$X2, NA)
+  save_host <- bind_rows(save_host, data.frame(GBIF_ID = obs_data$gbifID[i] , host= host))
+}
+```
+
+
+## Get 
+```{r}
+url <- "https://observation.org/observation/352518878/"
+resp <- GET(url)
+status_code(resp)
+result <- content(resp, "text", , encoding = "UTF-8")
+
+page <- read_html(url)
+# Then extract e.g. title, observation data, etc.
+title <- page %>% html_node("title") %>% html_text()
+title
+title <- page %>% html_node("Details") %>% html_text()
+
+x <- xml_child(page, 2)
+
+# Extract tables (if present)
+tables <- page %>% html_table()
+tables <- tables[[2]]
+location <- (tables$X1) %in% c("On/in")
+tables <- tables[location,]
+
+```
+
