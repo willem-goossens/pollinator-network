@@ -44,6 +44,19 @@ names$waardplant <- gsub(" indet.","", names$waardplant)
 # check against gbif for kingdom
 gbif <- name_backbone_checklist(names$waardplant)
 
+# this sometimes gives errors, here is patchwork option
+# also not perfect --> no idea why
+gbif <- name_backbone_checklist(names$waardplant[1])
+n <- nrow(names)
+n <- ceiling(n/20)
+for( i in 18: n){
+  begin <- 2 + (i-1)*20
+  end <- 1+ i *20
+  data <- name_backbone_checklist(names$waardplant[begin:end])
+  gbif <- bind_rows(gbif, data)
+  Sys.sleep(20)
+}
+
 # check which are not plant in gbif
 non_plants <- gbif[!gbif$kingdom =="Plantae",]
 non_plants <- non_plants[!is.na(non_plants$verbatim_name),]

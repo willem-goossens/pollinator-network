@@ -5,7 +5,7 @@ date: "2025-10-09"
 output: html_document
 ---
 
-# LOAD
+# 0 Load
 Packages
 ```{r}
 library(httr)
@@ -14,9 +14,11 @@ library(xml2)
 library(tidyverse)
 ```
 
-
+# 1 Observation.org
 Data show idea
 ```{r}
+scrape=F
+if(scrape){
 # get Andrena hatorfiana data for the Netherlands in 2025
 test <- read.delim("C:/Users/u0166342/Downloads/0064385-250920141307145/occurrence.txt", header = TRUE,
 sep = "\t", quote = "", stringsAsFactors = FALSE)
@@ -47,29 +49,72 @@ for(i in 1: length(obs_data$gbifID)){
   host <- ifelse(nrow(tables)>0, tables$X2, NA)
   save_host <- bind_rows(save_host, data.frame(GBIF_ID = obs_data$gbifID[i] , host= host))
 }
+}
 ```
 
 
-## Get 
+# 2 Others
 ```{r}
-url <- "https://observation.org/observation/352518878/"
-resp <- GET(url)
-status_code(resp)
-result <- content(resp, "text", , encoding = "UTF-8")
+# load data
+data <- read.delim("C:/Users/u0166342/Downloads/0028782-251025141854904/occurrence.txt", 
+                   header = TRUE, sep = "\t", quote = "", stringsAsFactors = FALSE)
 
-page <- read_html(url)
-# Then extract e.g. title, observation data, etc.
-title <- page %>% html_node("title") %>% html_text()
-title
-title <- page %>% html_node("Details") %>% html_text()
 
-x <- xml_child(page, 2)
+# remove empty columns
+data <- data[ , apply(data, 2, function(x) !all(is.na(x)))]
 
-# Extract tables (if present)
-tables <- page %>% html_table()
-tables <- tables[[2]]
-location <- (tables$X1) %in% c("On/in")
-tables <- tables[location,]
+# what is useful
+columns_keep <- c("gbifID","datasetName", "occurrenceID", "eventDate","decimalLatitude",
+                  "decimalLongitude","coordinateUncertaintyInMeters","taxonID","species",
+                  "level0Name","acceptedTaxonKey")
+data <- data[, colnames(data) %in% columns_keep]
+colnames(data) <- c("gbifID","dataset","occurrence","date","lat","long","uncertainty","taxonID",
+                    "acceptedID","species","region")
 
+data$date_original <- data$date 
+data$date <- as.Date(data$date_original)
+data$time <- sub(".*T", "", data$date_original)
+data$time[!grepl("T",data$date_original)] <- NA
+data <- data[, -c(12)]
+
+# get data from observation.org
+obs_data <- data[grepl( "observation.org",data$occurrence),]
+
+# keep other data 
+data <- data[!data$gbifID %in% obs_data$gbifID,]
+
+write_csv(obs_data, "../Extra/Intermediate/Observation_data.csv")
+write_csv(data, "../Extra/Intermediate/Other_data.csv")
 ```
+
+Link to picture
+
+This will take a very long time, maybe better retrieving it directly when doing PlantNet
+```{r}
+link =F
+if(link){
+# create data frame
+url_save <- data.frame(gbifID = character(), url = character())
+for(i in 1: nrow(data)){
+  
+  # get URL
+  URL <- data$occurrence[i]
+  
+  # Query
+  page <- read_html(URL)
+  
+  # Extract image URLs (main observation photos)
+  image_urls <- page |>
+    html_elements("meta[property='og:image']") |>
+    html_attr("content")
+
+  
+  save <- as.data.frame(cbind(rep(data$gbifID[i], length(image_urls) ), image_urls))
+  colnames(save) <- c("gbifID", "url")
+  url_save <- bind_rows(url_save, save)
+}
+}
+```
+
+
 
