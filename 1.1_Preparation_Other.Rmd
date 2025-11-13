@@ -1,0 +1,137 @@
+---
+title: "Preparation URL"
+author: "Willem Goossens"
+date: "2025-11-13"
+output: html_document
+---
+
+# 1 LOAD
+Empty environment
+```{r}
+rm(list=ls())
+```
+
+
+Load packages
+```{r}
+library(sf)
+library(tidyverse)
+```
+
+
+Load data
+```{r}
+pol <- read.csv("../Extra/Intermediate/Other_data.csv")
+```
+
+# 2 CLEAN
+## 2.1 Taxonomy
+```{r}
+# Get names pollinators
+names <- pol |> group_by(species, acceptedID) |> summarise(n =n())
+
+# look whether these are the accepted names
+gbif <- name_backbone_checklist(names$species)
+# check whether any of these is a synonym
+any(gbif$status != "ACCEPTED" & !is.na(gbif$status))
+# check whether any of these species is not the same
+any(gbif$species != gbif$verbatim_name, na.rm=T)
+
+
+# for those that did not have a name, check the acceptedID
+# here they are just blanks, to be checked whether this is the same for all data
+none <- names[(names$species)== "" | is.na(names$species),]
+i=1
+for(i in 1: length(none$acceptedID)){
+  if(is.na(none$acceptedID[i])) next
+  res <- name_usage( key = none$acceptedID[i])
+  # give family name if genus is absent
+  if(is.null(res$data$genus)){
+    names$species[names$acceptedID %in% none$acceptedID[i]] <- res$data$family
+  # give genus name if no species
+  } else if(is.null(res$data$species)){
+    names$species[names$acceptedID %in% none$acceptedID[i]] <- res$data$genus
+  # give species name 
+  } else {
+    names$species[names$acceptedID %in% none$acceptedID[i]] <- res$data$species
+  }
+}
+
+
+# check whether all are assigned
+any(is.na(names$species))
+```
+
+Assign
+```{r}
+pol$species[pol$acceptedID %in% none$acceptedID] <- 
+  names$species[match(pol$acceptedID[pol$acceptedID %in% none$acceptedID], names$acceptedID)]
+```
+
+
+## 2.2 Time
+```{r}
+# check period
+pol$date <- as.Date(pol$date)
+# show (here now per month)
+hist(pol$date,  breaks = "months")
+
+# are there any unknown dates
+any(is.na(pol$date))
+```
+
+## 2.3 Spatial
+Remove uncertainty
+```{r}
+# plot
+hist(pol$uncertainty)
+
+# check how many would be removed if uncertainty of more than 1 km
+sum(pol$uncertainty > 1000, na.rm=T)
+# check how many would be removed if uncertainty is not known
+sum(is.na(pol$uncertainty))
+
+# keep only within 1 km certainty
+pol <- pol |> filter( uncertainty < 1000)
+```
+
+Convert to coordinates
+```{r}
+# Convert coordinates to sf points
+coord <- pol[, c("gbifID", "long", "lat")] %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326)
+
+# get EURO+MED regions
+medRegions <- read_sf("C:/Users/u0166342/Documents/Boeren/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, st_crs(coord))
+```
+
+Join data
+```{r}
+# join data (still problem for the netherlands)
+joinedData <- st_join(coord, medRegions[-20,], join = st_within)
+
+# for netherlands change spatial feature
+sf_use_s2(F)
+res <- st_join(coord, medRegions[20,], join = st_within)
+sf_use_s2(T)
+# join again
+joinedData[(res$Region == "Netherlands") %in% TRUE,] <- 
+  res[(res$Region == "Netherlands") %in% TRUE,]
+
+# some still not assigned, assign to nearest plot
+joinedData[is.na(joinedData$EM_long_na),] <- st_join(coord[is.na(joinedData$EM_long_na),],
+                                                    medRegions[-20,], join = st_nearest_feature)
+```
+
+Check whether regions correspond
+```{r}
+setdiff(joinedData$country, pol$region)
+```
+
+
+# 3 SAVE
+```{r}
+write_csv(data,"../Extra/Intermediate/Data_others_cleaned.csv")
+```
+
