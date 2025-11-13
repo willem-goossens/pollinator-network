@@ -1,0 +1,27 @@
+---
+title: "PlantNet URL"
+author: "Willem Goossens"
+date: "2025-11-13"
+output: html_document
+---
+
+# 1 LOAD
+Empty environment
+```{r}
+rm(list=ls())
+```
+
+
+Load packages
+```{r}
+library(sf)
+library(tidyverse)
+```
+
+
+Load data
+```{r}
+pol <- read.csv("../Extra/Intermediate/Other_data_cleaned.csv")
+```
+
+
