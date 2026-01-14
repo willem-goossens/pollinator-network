@@ -1,0 +1,171 @@
+---
+title: "Data delivery"
+author: "Willem Goossens"
+date: "2025-11-19"
+output: html_document
+---
+
+# START
+```{r}
+rm(list=ls())
+```
+
+
+
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+# OBSERVATION
+## 1 LOAD
+```{r}
+obs <- read_csv("../Data/Observation/observation_org_hymenoptera_1995_2025.csv")
+```
+
+## 2 FILTER
+## 2.1 Filter
+```{r}
+# remove uncertain 
+length(obs$id[obs$`is certain`==FALSE])
+obs <- obs[obs$`is certain`==TRUE,]
+
+# remove obscure
+length(obs$id[obs$obscurity =="1"])
+obs <- obs[obs$obscurity=="0",]
+
+# check how many have pictures
+sum(obs$`has photos`, na.rm=T)
+```
+
+
+## 2.2 Space
+```{r}
+# only get european countries
+europe <- c(
+  "Albania", "Andorra", "Armenia", "Austria", 
+  "Belarus", "Belgium", "Bosnia and Herzegovina", "Bulgaria",
+  "Croatia", "Cyprus", "Czechia", 
+  "Denmark", 
+  "Estonia",
+  "Finland", "France",
+  "Georgia", "Germany", "Greece",
+  "Hungary",
+  "Iceland", "Ireland", "Italy",
+  "Kosovo", "Latvia", "Liechtenstein", "Lithuania", "Luxembourg",
+  "Malta", "Moldova", "Monaco", "Montenegro",
+  "Netherlands", "North Macedonia", "Norway",
+  "Poland", "Portugal",
+  "Romania", 
+  "San Marino", "Serbia", "Slovakia", "Slovenia", "Spain",
+  "Sweden", "Switzerland",
+  "Ukraine", "United Kingdom", "Vatican City"
+)
+
+# retrieve --> these are by far the most species
+obs <- obs[obs$country %in% europe,]
+
+# check regions
+regions <- obs |> group_by(country) |> summarise(n=n())
+
+# check accuracy
+# how many remove if accuracy not more than 250 m
+length(obs$accuracy[obs$accuracy >250])
+sum(is.na(obs$accuracy))
+# 1,000,000
+# remove all observations with higher uncertainty
+obs <- obs[!obs$accuracy>250 ,]
+
+# check whether all observations have coordinates
+obs <- obs[!is.na(obs$lat) | !is.na(obs$lng),]
+```
+
+
+```{r}
+# to plot
+# Convert coordinates to sf points
+# coord <- obs[, c("id", "lat", "lng")] %>% st_as_sf(coords = c("lng", "lat"), crs = 4326)
+# ggplot()+ geom_sf(data= coord)
+
+```
+
+## 2.3 Time
+```{r}
+# make date a date type
+obs$date <- as.Date(obs$date)
+
+# check spreak
+hist(obs$date, breaks= "years")
+# between 14 februari 1995 and 18 november 2025
+min(obs$date)
+max(obs$date)
+# 50% of observations last 2 years
+median(obs$date)
+```
+
+
+## 2.3 Species
+```{r}
+# quick subdivision here
+obs2 <- obs[obs$`has photos`==TRUE,]
+obs3 <- obs[obs$`has photos`== FALSE & !is.na(obs$`related species`),]
+
+# only get pollinators
+families <- obs |> group_by(family) |> summarise(n= n())
+writeClipboard(families$family)
+# these are the bee families
+bees <- c( "Andrenidae", "Apidae", "Colletidae","Halictidae","Megachilidae","Melittidae")
+wasps <- c("Scoliidae", "Thynnidae", "Tiphiidae","Vespidae","Pompilidae","Sphecidae", "Crabronidae","Masaridae", "Sapygidae")
+extra <- c("Apoidea", "Anthophila", "Apocrita")
+
+
+# how many observations are from bees
+sum(families$n[families$family%in% bees | families$family%in% wasps | families$family%in% extra])
+sum(families$n[families$family%in% bees])
+# 2,611,205 (with wasps 3,626,149)
+# if pictures 1,8225,524 (with wasps 2,624,720)
+# if only indication 181,223 (with wasps 189.030)
+
+
+# here a very brief check of all species names
+# you can change obs to 2 or 3 to check what difference this would make for the final dataset
+names <- obs |> group_by(`scientific name`, `species type`) |> summarise(n = n())
+
+# check how many are aggregates
+sum(names$n[names$`species type`=="aggregate species"])
+sum(names$n[names$`species type`!="aggregate species"])
+```
+
+
+
+## 3 SAVE
+```{r}
+# only save relevant columns
+col_save <- c("id","date","time","species name","scientific name","family","species type","number","sex","life stage","activity",
+              "related species","related species name","lat","lng","accuracy","country","validation status","has photos", "link")
+# retrieve these columns
+obs <- obs[, colnames(obs) %in% col_save]
+
+# check number of observations with related species
+length(obs$id[!is.na(obs$`related species`)])
+# 525,000 observations
+# and 217,000 of these have no image
+# 300,000 can be used for validation normally 
+# but it should still be checked whether these are all pollinators
+
+obs_bees <- obs[obs$family %in% bees,]
+
+write_csv(obs_bees, "../Data/Observation/observation_org_bees.csv")
+
+# most observations have pictures
+# remove observations that have neither a picture nor an associated (related) species
+pol_indicated <- obs[obs$`has photos`== FALSE & !is.na(obs$`related species`),]
+nrow(pol_indicated)
+# how many observations are useless
+nrow(obs[obs$`has photos`== FALSE & is.na(obs$`related species`),])
+# the following code also retrieve only those with a picture, but that is not really required
+# we just save obs altogether and can then later clean the data further if required
+obs2 <- obs[obs$`has photos`==TRUE,]
+nrow(obs[obs$`has photos`==TRUE,])
+```
+

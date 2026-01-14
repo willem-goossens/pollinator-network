@@ -1,0 +1,190 @@
+---
+title: "PlantNet conversion"
+author: "Willem Goossens"
+date: "2026-01-13"
+output: html_document
+---
+
+
+# 1 LOAD
+Empty environment
+```{r}
+rm(list=ls())
+wd <- getwd()
+```
+
+Load packages
+```{r}
+library(tidyverse)
+library(plantnet)
+library(httr)
+library(rvest)
+library(jsonlite)
+library(ttutils)
+```
+
+Load data
+```{r}
+# polinator data
+pol <- read.csv("../Data/Observation/observation_org_bees.csv")
+# only get picture data
+obs <- pol[pol$has.photos,]
+```
+
+
+```{r}
+# identifications 
+setwd("I:/")
+# Paths for checkpointing
+results_file_one <- "observation_org_identification.RData"
+denied_file_one  <- "Permission_denied.csv"
+
+# Paths for checkpointing
+results_file_third <- "observation_org_identification_third.RData"
+denied_file_third  <- "Permission_denied_third.csv"
+
+# Load previous results if they exist
+results_list_one <- readRDS(results_file_one)
+permission_denied_one <- read_csv(denied_file_one) 
+
+# Load previous results if they exist
+results_list_third <- readRDS(results_file_third)
+permission_denied_third <- read_csv(denied_file_third) 
+setwd(wd)
+```
+
+
+Merge data
+```{r}
+list <- merge(results_list_one, results_list_third)
+```
+
+
+Extract data
+```{r}
+if(file.exists("../Results/Plantnet_identification.csv")){
+  pol_plantnet <- read.csv("../Results/Plantnet_identification.csv")
+  pol_plantnet$GBIF_ID <- as.character(pol_plantnet$GBIF_ID)
+  pol_plantnet$POWO_ID <- as.character(pol_plantnet$POWO_ID)
+  pol_plantnet$IUCN <- as.character(pol_plantnet$IUCN)
+  pol_plantnet$IUCN_ID <- as.character(pol_plantnet$IUCN_ID)
+} else {
+  # create empty data frame to paste most likely results in
+  pol_plantnet <- data.frame(ID = numeric(), Score = numeric(), Name = character(), Common_name = character(),
+                             Name_author= character(),Genus= character(), Genus_author= character(), 
+                             Family = character(), Family_author = character(), GBIF_ID = character(),
+                             POWO_ID = character(), IUCN_ID = character(), IUCN = character(), 
+                             Organ = character(), Genus_most= character(), URL = character(), n_pictures = numeric())
+}
+
+
+# get observation data again
+id_pol <- as.numeric(names(list))
+id_pol <- id_pol[!id_pol %in% pol_plantnet$ID]
+
+# define stable output schema once
+plant_schema <- c("ID", "Score", "Name", "Common_name", "Name_author", "Genus", "Genus_author", "Family", "Family_author", "GBIF_ID", "POWO_ID",
+                  "IUCN_ID", "IUCN")
+
+id <- 2299573
+
+for (id in id_pol) {
+
+  predicted <- list[[as.character(id)]]
+  
+  if (length(predicted$predicted_organ) < 1) next
+  
+  # Prepare predicted_plant safely
+  predicted_plant <- predicted$predicted_plant %>%
+    mutate(
+      Score = score,
+      Name = species.scientificNameWithoutAuthor,
+      Common_name = species.commonNames,
+      Name_author = species.scientificNameAuthorship,
+      Genus = species.genus.scientificNameWithoutAuthor,
+      Genus_author = species.genus.scientificNameAuthorship,
+      Family = species.family.scientificNameWithoutAuthor,
+      Family_author = species.family.scientificNameAuthorship,
+      GBIF_ID = if ("gbif.id" %in% names(cur_data())) .data[["gbif.id"]] else NA,
+      POWO_ID = if ("powo.id" %in% names(cur_data())) .data[["powo.id"]] else NA,
+      IUCN_ID = if ("iucn.id" %in% names(cur_data())) .data[["iucn.id"]] else NA,
+      IUCN    = if ("iucn.category" %in% names(cur_data())) .data[["iucn.category"]] else NA
+    ) %>%
+    select(any_of(plant_schema))
+
+  # enforce missing columns explicitly
+  missing_cols <- setdiff(plant_schema, colnames(predicted_plant))
+  predicted_plant[missing_cols] <- NA
+  predicted_plant <- predicted_plant[, plant_schema]
+  
+  # only save the first common name given
+  for(com_id in 1: nrow(predicted_plant)){
+      predicted_plant$Common_name[[com_id]] <- as.character(predicted_plant$Common_name[[com_id]][1])
+  }
+    
+  # make this again a predictor
+  predicted_plant$Common_name <- as.character(predicted_plant$Common_name)
+  predicted_plant$ID <- as.numeric(predicted_plant$ID)
+  
+  # first check for identifications which lack an organ, they are likely incorrect
+  if(all(is.na(predicted$predicted_organ$organ))){
+    
+  # create empty data frame to add
+  add <- data.frame(ID= as.numeric(as.character((id))), Score = NA_real_, Name = NA_character_, 
+                      Common_name = NA_character_, Name_author= NA_character_,
+                      Genus= NA_character_, Genus_author= NA_character_,Family = NA_character_, Family_author = NA_character_, 
+                      GBIF_ID = NA_character_, POWO_ID = NA_character_, IUCN_ID = NA_character_, IUCN = NA_character_, Genus_most = NA_character_,
+                      Organ = "None", URL= obs$link[obs$id == id][1], n_pictures = nrow(predicted$predicted_organ))
+    
+  # add to dataframe
+  pol_plantnet <- bind_rows(pol_plantnet, add)
+    
+  # check whether any of the observations is a flower
+  # if so, we will use the highest score 
+  # this can be from another plant organ but that does not really matter here    
+  } else if (any(predicted$predicted_organ$organ[!is.na(predicted$predicted_organ$organ)] == "flower")) {
+    
+    # link highest scoring
+    pol_plantnet <- bind_rows(pol_plantnet, 
+                              c(predicted_plant[which.max(predicted_plant$Score),],
+                                Organ ="flower", Genus_most = NA, URL= ( obs$link[obs$id == id][1]), 
+                                n_pictures = nrow(predicted$predicted_organ)))
+    
+    # check for different genera
+    genera <- names(sort(table(predicted_plant$Genus[predicted_plant$Score > 0.3]))[1])
+    # check whether there are some observations for which there are more observations
+    if(sort(table(predicted_plant$Genus), decreasing = T )[1] >1){
+      genus_plantnet_sp <- predicted_plant$Genus[which.max(predicted_plant$Score)]
+      pol_plantnet$Genus_most[pol_plantnet$ID %in% id] <- genus_plantnet_sp
+    }
+    
+    
+  # these are all the other identfications
+  # for these we will use the highest identification number
+  } else {
+
+  # check the organ for which we obtained the highest observation identification
+    organ_identified <- predicted$predicted_organ[which.max(predicted$predicted_organ$score),]
+    pol_plantnet <- bind_rows(pol_plantnet,
+                              c(predicted_plant[which.max(predicted_plant$Score),],
+                                Organ = organ_identified$organ, Genus_most = NA,
+                                URL=  obs$link[obs$id == id][1], 
+                                n_pictures = nrow(predicted$predicted_organ)))
+    # check for different genera
+    genera <- names(sort(table(predicted_plant$Genus[predicted_plant$Score > 0.3]))[1])
+    # check whether there are some observations for which there are more observations
+    if(sort(table(predicted_plant$Genus), decreasing = T )[1] >1){
+      genus_plantnet_sp <- predicted_plant$Genus[which.max(predicted_plant$Score)]
+      pol_plantnet$Genus_most[pol_plantnet$ID %in% id] <- genus_plantnet_sp
+    }
+  }
+}
+
+write_csv(pol_plantnet, "../Results/Plantnet_identification.csv")
+
+# check observations not identified
+#setdiff(id_pol, pol_plantnet$ID)
+```
+
+
+

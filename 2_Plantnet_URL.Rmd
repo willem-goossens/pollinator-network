@@ -11,17 +11,331 @@ Empty environment
 rm(list=ls())
 ```
 
-
 Load packages
 ```{r}
-library(sf)
 library(tidyverse)
+library(plantnet)
+library(httr)
+library(rvest)
+library(jsonlite)
 ```
-
 
 Load data
 ```{r}
-pol <- read.csv("../Extra/Intermediate/Other_data_cleaned.csv")
+pol <- read.csv("../Data/Observation/observation_org_bees.csv")
+```
+
+
+# 2 PREPARE
+## 2.1 Data
+Get data already identified
+```{r}
+result_list_done <- read_rds("../Results/observation_org_identification.RData")
+permission_denied <- read_csv( "../Extra/Intermediate/Permission_denied.csv")
+already_identified <- names(result_list_done)
+already_identified <- c(already_identified, permission_denied$denied)
+```
+
+Prepare data for identification
+```{r}
+# key
+api_key <- "2b10bu236VtELMT8bV13UQb73e"
+
+# Set the API endpoint
+url_api <- paste0("https://my-api.plantnet.org/v2/identify/all?api-key=", api_key)
+```
+
+
+Get all observation data
+```{r}
+# only get picture data
+obs <- pol[pol$has.photos,]
+
+# get pictures per id
+id_pol_all <- unique(obs$id)
+```
+
+## 2.2 Functions
+```{r}
+# based on function of PlantNet
+# I just do not want to print the URL every time
+buildURL <- function(key, imageURL, organs = 'auto', 
+                     lang = 'en', no_reject = 'false'){
+  
+  # get URL 
+  URLencoded <- sapply(imageURL, FUN = URLencode, reserved = TRUE, repeated = TRUE)
+  
+  # make URL
+  url_string <- paste0("https://my-api.plantnet.org/v2/identify/all?",
+                       "images=", paste(URLencoded, collapse = "&images="),
+                       "&organs=", paste(organs, collapse = "&organs="),
+                       "&no-reject=", no_reject,
+                       "&lang=", lang,
+                       "&api-key=", key)
+}  
+```
+
+
+# 3 PLANTNET
+## 3.1 Run function
+```{r}
+  # run for subset
+  id_pol <- id_pol_all[!id_pol_all %in% already_identified]
+  id_pol <- id_pol_all[1:10]
+  id <- id_pol[1]
+  # get data list
+  results_list <- list()
+  number_of_observations <- 0
+  id = 40019426
+  for(id in id_pol){
+    # get URL
+    imageURL <- obs$link[obs$id == id]
+    imageURL <- imageURL[!duplicated(imageURL)]
+    
+    # read page
+    page <- read_html(imageURL)
+   
+    # retrieve all images
+    imgs <- html_elements(page, "img")
+    
+    # observation.org stores them in two formats
+    # we retrieve both options
+    src  <- html_attr(imgs, "src")
+    datasrc <- html_attr(imgs, "data-src")
+    
+    # combine
+    image_urls <- c(src, datasrc)
+    
+    # remove empty or NA
+    image_urls <- image_urls[!is.na(image_urls) & image_urls != ""]
+    
+    # keep only real observation photos
+    image_urls <- grep("/media/photo/.*\\.(jpg|jpeg)", image_urls, value = TRUE)
+    # take them all as large pictures
+    image_urls <- sub("\\?.*$", "", image_urls)
+    # now remove duplicates
+    image_urls <- image_urls[!duplicated(image_urls)]
+    
+    # Make relative URLs absolute
+    # Extract the domain from the observation page URL
+    domain <- sub("^https?://([^/]+).*", "\\1", imageURL)
+  
+    # Construct base URL (https + domain)
+    base <- paste0("https://", domain)
+  
+    # Make relative URLs absolute using the correct domain
+    image_urls <- ifelse(
+      startsWith(image_urls, "http"),
+      image_urls,
+      paste0(base, image_urls))
+    
+    if(length(image_urls)<1){
+      denied_id <- as.data.frame(id)
+      colnames(denied_id) <- "denied"
+      permission_denied <- bind_rows(permission_denied, denied_id)
+    }
+    
+    if(length(image_urls)<1) next
+  
+    
+    # create dataset to assign results
+    results_pol <- data.frame(ID = numeric(), Score = numeric(), Name = character(),
+                                   Common_name = character(), Name_author= character(),
+                                   Genus= character(), Genus_author= character(), 
+                                   Family = character(), Family_author = character(), 
+                                   GBIF_ID = character(),POWO_ID = character(), 
+                                   IUCN_ID = character(), IUCN = character())
+    
+    # create dataset to assign flower organs
+    results_pol_organs <- data.frame(ID= numeric(), Organ = character(), Score = numeric(), 
+                                     imageURL= character() )
+    
+    # Split into chunks of 5 images each (PlantNet limit)
+    chunks <- ceiling(length(image_urls)/5)
+    
+    # make sure that we are able to run as manny observations as deemed necessary
+    number_of_observations <- number_of_observations + chunks
+  
+    for (chunk in 1: chunks) {
+        
+      # get chunks
+      length_chunks <- ceiling(length(image_urls)/chunks) 
+      
+      # create begin and end values for the plot observation ID
+      min_chunk<- ((chunk-1)*length_chunks+1)
+      max_chunk<- (chunk*length_chunks)
+      if(max_chunk>length(image_urls)){
+          max_chunk <- length(image_urls)
+      }
+          
+      picturesURL <- image_urls[min_chunk: max_chunk]
+        
+      # Assign URL
+      URL <- buildURL(key = api_key, imageURL = picturesURL, organs = rep("auto", length(picturesURL)), 
+                      lang = "en", no_reject = 'true')
+      
+      # Run PlantNet
+      response <- httr::GET(URL)
+      
+      # Check the status
+      status <- response$status_code
+    
+      if (status == 200) {
+          
+           # get result from response and make it a table
+           result <- content(response, as = "text", encoding = "UTF-8")
+            
+           # make data frame
+           parsed_result <- fromJSON(result, flatten = TRUE)
+            
+           # get organ predicted
+           predicted_organ <- parsed_result$predictedOrgans[,2:3]
+           predicted_organ <- cbind(as.numeric(rep(id, nrow(parsed_result$predictedOrgans))), predicted_organ)
+           colnames(predicted_organ) <- c("ID","Organ","Score")
+           predicted_organ$imageURL <- as.character(picturesURL)
+        
+           # get plants predicted and change names
+           predicted_plant <- cbind(rep(id, nrow(parsed_result$results)), parsed_result$results)
+           if(ncol(predicted_plant)>14){
+                predicted_plant <- predicted_plant[, c(1,2,3,5,6,7,9,10,12,13,14,15,16)]
+                colnames(predicted_plant) <- c("ID","Score","Name","Common_name","Name_author","Genus","Genus_author","Family","Family_author",
+                                               "GBIF_ID","POWO_ID","IUCN_ID","IUCN")
+           } else if(ncol(predicted_plant) == 14) {
+                predicted_plant <- predicted_plant[, c(1,2,3,5,6,7,9,10,12,13,14)]
+                colnames(predicted_plant) <- c("ID","Score","Name","Common_name","Name_author","Genus","Genus_author","Family","Family_author",
+                                               "GBIF_ID","POWO_ID")
+           } else {
+                predicted_plant <- predicted_plant[, c(1,2,3,5,6,7,9,10,12,13)]
+                colnames(predicted_plant) <- c("ID","Score","Name","Common_name","Name_author","Genus","Genus_author","Family","Family_author",
+                                               "GBIF_ID")
+            }
+            
+           # only save the first common name given
+           for(com_id in 1: nrow(parsed_result$results)){
+             predicted_plant$Common_name[[com_id]] <- as.character(predicted_plant$Common_name[[com_id]][1])}
+            
+           # make this again a predictor
+           predicted_plant$Common_name <- as.character(predicted_plant$Common_name)
+           predicted_plant$ID <- as.numeric(predicted_plant$ID)
+                  
+            
+           # Store results in a list (create a data frame for this image)
+           results_pol <- bind_rows(results_pol, predicted_plant)
+           results_pol_organs <- bind_rows(results_pol_organs, predicted_organ)
+          
+           } else {
+           # create empty dataframe
+           # only assign id
+           add <- data.frame(ID= as.numeric(as.character((id))), Score = as.numeric(NA), Name = NA, Common_name = NA, Name_author= NA,
+                                      Genus= NA, Genus_author= NA, Family = NA, Family_author = NA, 
+                                      GBIF_ID = NA, POWO_ID = NA, IUCN_ID = NA, IUCN = NA)
+            
+           # add to results
+           results_pol <- bind_rows(results_pol, add)
+            
+           # do the same for the organs
+           add_organs <- data.frame(ID= as.numeric(as.character((id))),  Organ = NA, Score = NA)
+           results_pol_organs <- bind_rows(results_pol_organs, add_organs)
+          }
+    }
+    # create overall results as list
+    results_list[[as.character(id)]] <- list(predicted_organ = results_pol_organs, predicted_plant = results_pol)
+    
+    if(number_of_observations >= 12) {
+        break
+    }
+  }
+  
+  # paste this to the existing list of data
+  results_list <- c(result_list_done, results_list)
+  
+  permission_denied <- as.data.frame(permission_denied)
+  colnames(permission_denied) <- "denied"
+  write_csv(permission_denied, "../Extra/Intermediate/Permission_denied.csv")
+  
+  # save together
+  write_rds(results_list, "../Results/observation_org_identification.RData")
+```
+
+
+
+
+Retrieve all with highest scores
+```{r}
+# Load data again
+results_list <-read_rds("../Results/observation_org_identification.RData")
+
+# create empty data frame to paste most likely results in
+pol_plantnet <- data.frame(ID = numeric(), Score = numeric(), Name = character(), Common_name = character(),
+                           Name_author= character(),Genus= character(), Genus_author= character(), 
+                           Family = character(), Family_author = character(), GBIF_ID = character(),
+                           POWO_ID = character(), IUCN_ID = character(), IUCN = character(), 
+                           Organ = character(), Genus_most= character(), URL = character())
+
+# get observation data again
+id_pol <- as.numeric(names(results_list))
+id <- id_pol[2]
+# create final dataset from the list 
+for(id in id_pol){
+  
+  # predicted data for that observation ID
+  predicted <-   results_list[[as.character(id)]]
+  
+  # first check for identifications which lack an organ, they are likely incorrect
+  if(all(is.na(predicted$predicted_organ$Organ))){
+    
+    # create empty data frame to add
+    add <- data.frame(ID= as.numeric(as.character((id))), Score = as.numeric(NA), Name = NA, 
+                      Common_name = NA, Name_author= NA,
+                      Genus= NA, Genus_author= NA,Family = NA, Family_author = NA, 
+                      GBIF_ID = NA, POWO_ID = NA, IUCN_ID = NA, IUCN = NA, Genus_most = NA, Organ = "None", 
+                      URL= obs$link[obs$id == id])
+    
+    # add to dataframe
+    pol_plantnet <- bind_rows(pol_plantnet, add)
+    
+    # check whether any of the observations is a flower
+    # if so, we will use the highest score 
+    # this can be from another plant organ but that does not really matter here
+  } else if(any(predicted$predicted_organ$Organ[!is.na(predicted$predicted_organ$Organ)] == "flower")){
+    
+    # add maximum scoring to pollination
+    pol_plantnet <- bind_rows(pol_plantnet, 
+                              c(predicted$predicted_plant[which.max(predicted$predicted_plant$Score),],
+                                Organ ="flower", Genus_most = NA, URL= ( obs$link[obs$id == id])))
+    
+    
+    # check for different genera
+    genera <- names(sort(table(predicted$predicted_plant$Genus[predicted$predicted_plant$Score > 0.3]))[1])
+    # check whether there are some observations for which there are more observations
+    if(sort(table(predicted$predicted_plant$Genus))[1] >1){
+      genus_plantnet_sp <- predicted$predicted_plant$Genus[which.max(predicted$predicted_plant$Score)]
+      if(genus_plantnet_sp != genera){
+        pol_plantnet$Genus_most[pol_plantnet$ID %in% id] <- genus_plantnet_sp
+      }
+    }
+    
+    
+    # these are all the other identfications
+    # for these we will use the highest identification number
+  } else {
+    # check the organ for which we obtained the highest observation identification
+    organ_identified <- predicted$predicted_organ[which.max(predicted_organ$Score),]
+    pol_plantnet <- bind_rows(pol_plantnet,
+                              c(predicted$predicted_plant[which.max(predicted$predicted_plant$Score),],
+                                Organ = organ_identified$Organ, Genus_most = NA,
+                                URL=  obs$link[obs$id == id]))
+    # check for different genera
+    genera <- names(sort(table(predicted$predicted_plant$Genus[predicted$predicted_plant$Score > 0.3]))[1])
+    # check whether there are some observations for which there are more observations
+    if(sort(table(predicted$predicted_plant$Genus))[1] >1){
+      genus_plantnet_sp <- predicted$predicted_plant$Genus[which.max(predicted$predicted_plant$Score)]
+      if(genus_plantnet_sp != genera){
+        pol_plantnet$Genus_most[pol_plantnet$ID %in% id] <- genus_plantnet_sp
+      }
+    }
+  }
+}
 ```
 
 

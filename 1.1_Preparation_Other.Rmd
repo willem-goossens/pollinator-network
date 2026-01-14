@@ -132,6 +132,6 @@ setdiff(joinedData$country, pol$region)
 
 # 3 SAVE
 ```{r}
-write_csv(data,"../Extra/Intermediate/Data_others_cleaned.csv")
+write_csv(pol,"../Extra/Intermediate/Other_data_cleaned.csv")
 ```
 
