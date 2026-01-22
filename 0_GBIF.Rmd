@@ -4,6 +4,7 @@ author: "Willem"
 date: "2025-10-09"
 output: html_document
 ---
+Create database based on GBIF data
 
 # 0 Load
 Packages

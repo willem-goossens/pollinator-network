@@ -5,6 +5,8 @@ date: "2025-11-13"
 output: html_document
 ---
 
+This data is based on the GBIF data previously downloaded
+
 # 1 LOAD
 Empty environment
 ```{r}

@@ -5,11 +5,13 @@ date: "2025-11-19"
 output: html_document
 ---
 
+File based on the complete dataset downloaded.
+We filter that data here, based on location, space and pollinator species
+
 # START
 ```{r}
 rm(list=ls())
 ```
-
 
 
 ```{r}
@@ -52,15 +54,15 @@ europe <- c(
   "Georgia", "Germany", "Greece",
   "Hungary",
   "Iceland", "Ireland", "Italy",
-  "Kosovo", "Latvia", "Liechtenstein", "Lithuania", "Luxembourg",
+  "Kosovo", 
+  "Latvia", "Liechtenstein", "Lithuania", "Luxembourg",
   "Malta", "Moldova", "Monaco", "Montenegro",
   "Netherlands", "North Macedonia", "Norway",
   "Poland", "Portugal",
   "Romania", 
-  "San Marino", "Serbia", "Slovakia", "Slovenia", "Spain",
-  "Sweden", "Switzerland",
-  "Ukraine", "United Kingdom", "Vatican City"
-)
+  "San Marino", "Serbia", "Slovakia", "Slovenia", "Spain","Sweden", "Switzerland",
+  "Ukraine", "United Kingdom", 
+  "Vatican City")
 
 # retrieve --> these are by far the most species
 obs <- obs[obs$country %in% europe,]
