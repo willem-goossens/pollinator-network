@@ -1,0 +1,106 @@
+---
+title: "Plantnet validation"
+author: "Willem Goossens"
+date: "2026-01-14"
+output: html_document
+---
+
+# 1 INTRO
+Empty environment
+```{r}
+rm(list=ls())
+```
+
+Load packages
+```{r}
+library(tidyverse)
+library(plantnet)
+library(httr)
+library(utils)
+library(jsonlite)
+```
+
+Load data
+```{r}
+pol_plantnet <- read.csv("../Results/Plantnet_identification.csv")
+pol <- read.csv("../Data/Observation/observation_org_bees.csv")
+```
+
+
+# 2 LINK
+## 2.1 Dataset
+```{r}
+# link
+colnames(pol_plantnet) <- paste0(colnames(pol_plantnet), "_Plantnet")
+pol[,28:34] <- pol_plantnet[match(pol$ID, pol_plantnet$ID_Plantnet),]
+
+# create dataset to validate the results
+validate <- pol[!is.na(pol$Score_Plantnet),]
+validate$GBIF_Name_Plantnet <-NA
+validate$GBIF_Genus_Plantnet <- NA
+validate$GBIF_Family_Plantnet <- NA
+```
+
+
+## 2.2 Validate names
+```{r}
+# take unique species names
+names <- unique(validate[, c(30,33,34:37)])
+
+# asign GBIF names
+i=1
+for(i in 1: length(names$Name_Plantnet)){
+  if(is.na(names$GBIF_ID_Plantnet[i])) next
+  res <- name_usage( key = names$GBIF_ID_Plantnet[i])
+  names$GBIF_Name_Plantnet[i] <- res$data$species
+  names$GBIF_Genus_Plantnet[i] <- res$data$genus
+  names$GBIF_Family_Plantnet[i] <- res$data$family
+}
+
+
+# look whether these are the accepted names
+gbif_plantnet <- name_backbone_checklist(names$GBIF_Name_Plantnet)
+# check whether any of these is a synonym
+any(gbif_plantnet$status != "ACCEPTED" & !is.na(gbif_plantnet$status))
+# assign
+validate$GBIF_Name_Plantnet <- names$GBIF_Name_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
+validate$GBIF_Genus_Plantnet <- names$GBIF_Genus_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
+validate$GBIF_Family_Plantnet <- names$GBIF_Family_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
+
+# check plantnet names of thos not yet 
+names <- names[is.na(names$GBIF_Name_Plantnet),]
+i=1
+# lookup in powo if not in GBIF
+powo <- names[!is.na(names$POWO_ID_Plantnet),]
+for(i in 1: length(powo$Name_Plantnet)) {
+  powo_name <- lookup_powo(powo$POWO_ID_Plantnet[i])
+  if(powo_name$taxonomicStatus[i]=="Accepted"){
+    names$GBIF_Name_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$name
+    names$GBIF_Genus_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$genus
+    names$GBIF_Family_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$family
+
+  } 
+}
+
+# read names
+names_definition <- read_csv("../Extra/Names/plant_names.csv", show_col_types = FALSE)
+
+gbif_plantnet <- name_backbone_checklist(names$Name_Plantnet)
+
+lookup_powo(names$POWO_ID_Plantnet[2])
+# look at difference between both columns
+none <- name_backbone_checklist(validate$Name_Plantnet[is.na(validate$GBIF_ID_Plantnet)])
+none <- cbind(c(validate$ID[is.na(validate$GBIF_ID_Plantnet)]), none)
+colnames(none)[1] <- "ID"
+i=1
+for(i in 1: length(none$usageKey)){
+  if(is.na(none$acceptedUsageKey[i])) next
+  res <- name_usage( key = none$acceptedUsageKey[i])
+  validate$GBIF_Name_Plantnet[validate$ID %in% none$ID[i]] <- res$data$species
+  validate$GBIF_Genus_Plantnet[validate$ID %in% none$ID[i]] <- res$data$genus
+  validate$GBIF_Family_Plantnet[validate$ID %in% none$ID[i]] <- res$data$family
+}
+
+name_usage( key = 3042506)$data
+```
+

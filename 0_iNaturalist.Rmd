@@ -1,0 +1,337 @@
+---
+title: "iNaturalist"
+author: "Willem Goossens"
+date: "2026-01-20"
+output: html_document
+---
+
+
+File based on the complete dataset downloaded.
+We filter that data here, based on location, space and pollinator species
+
+# START
+```{r}
+rm(list=ls())
+```
+
+
+```{r}
+library(tidyverse)
+library(sf)
+library(duckdb)
+library(sf)
+library(sp)
+library(units)
+library(doParallel)
+library(lwgeom)
+```
+
+# OBSERVATION
+## 1 Load Taxa
+```{r}
+# read taxa
+taxa <- read_delim("~/Doctoraat/Observation/Data/iNaturalist/taxa.csv", 
+    delim = "\t", escape_double = FALSE, trim_ws = TRUE, show_col_types = FALSE)
+
+# retrieve hymenoptera data
+hymenoptera_id <- taxa[taxa$name %in% "Hymenoptera",]
+hymenoptera <- taxa[taxa$taxon_id == hymenoptera_id$taxon_id |  grepl(paste0("(^|/)", hymenoptera_id$taxon_id, "(/|$)"), taxa$ancestry),]
+
+# bee root id (Antophila is the epifamily)
+bee_root_id <- taxa[taxa$name == "Anthophila" & taxa$rank == "epifamily",]
+
+# extract all bees
+bees <- taxa[taxa$taxon_id == bee_root_id$taxon_id |  grepl(paste0("(^|/)", bee_root_id$taxon_id, "(/|$)"), taxa$ancestry),]
+
+rm(list =  setdiff(ls(),c("bees")))
+```
+
+
+## 2 Load observations
+```{r}
+# connect with duck 
+con <- dbConnect(duckdb::duckdb(), dbdir = "inat.duckdb")
+duckdb_register(con, "bees", bees)
+
+# read observations
+obs_bees <- dbGetQuery(con, " SELECT * FROM read_csv_auto('../Data/iNaturalist/observations.csv', delim = '\t' )
+  WHERE taxon_id IN ( SELECT taxon_id  FROM bees) ")
+
+# disconnect
+dbDisconnect(con)
+```
+
+# FILTER
+## 1 Quality
+```{r}
+# filter to only keep research grade
+obs <- obs_bees[obs_bees$quality_grade == "research",]
+
+# look at uncertainty in coordinates
+# check accuracy
+# how many remove if accuracy not more than 250 m
+length(obs$positional_accuracy[obs$positional_accuracy >250])
+# 680850
+# remove all observations with higher uncertainty
+obs <- obs |> filter(positional_accuracy <= 250)
+```
+
+## 2 Date
+```{r}
+# filter date older than 1995
+obs$observed_on <- as.Date(obs$observed_on)
+
+# remove older
+obs <- obs |> filter(observed_on >= "1995-01-01" )
+```
+
+
+## 3 Location
+```{r}
+# only get European data
+# get bounding box coordinates
+longitude <- c(-20, 45)
+latitude <- c(30, 73)
+
+# filter
+obs <- obs[obs$longitude>= -20 & obs$longitude<=45,]
+obs <- obs[obs$latitude>= 30 & obs$latitude <= 73,]
+```
+
+
+```{r}
+## Plot location countries
+coord <-obs[, c("observation_uuid", "latitude", "longitude")]%>%st_as_sf(coords = c("longitude","latitude"),crs = 4326)
+# ggplot()+ geom_sf(data= coord)
+
+# we should still remove some observations from other regions, we will load the Euro+Med data
+```
+
+
+```{r}
+# get Euro+Med maks
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# Assign all plots which are within one of the regions to the given region
+sf_use_s2(T) #S2 can provide better performance for certain types of spatial operations, especially when dealing with large spatial datasets.
+joinedData <- st_join(coord, medRegions[-20,], join = st_within)
+
+# There is something awry with the geometry of the Netherlands, this is why we treat it specially here
+sf_use_s2(F)
+res <- st_join(coord, medRegions[20,], join = st_within)
+# Merge the Netherlands back into the overall data
+# use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
+joinedData[(res$Region == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+```
+
+
+```{r}
+# list of unique countries in the database
+countries <- unique(joinedData$country)
+
+# we will exclude Russia
+# list of European countries
+europe_regions <- c(
+  "Albania","Austria",
+  "Belarus","Belgium","Bosnia-Herzegovina", "Bulgaria",
+  "Croatia","Czech Republic",
+  "Denmark",
+  "Estonia",
+  "Finland","France",
+  "Georgia","Germany","Greece",
+  "Hungary",
+  "Iceland","Italy","Ireland",
+  "Latvia", "Lithuania","Luxemburg",
+  "Moldavia", "Montenegro",
+  "Netherlands","North Macedonia","Norway",
+  "Poland", "Portugal",
+  "Romania",
+  "Slovakia",  "Slovenia",  "Spain",  "Sweden",  "Switzerland", "Sicily","Serbia & Kosovo",
+  "Ukraine", "United Kingdom")
+
+# give the points without a country their region
+joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+
+# change United Kingdom
+joinedData$country <- gsub("United.Kingdom","United Kingdom",joinedData$country)
+joinedData$country <- gsub("Republic.of.Ireland","Ireland",joinedData$country)
+countries <- unique(joinedData$country)
+
+# check whether the number of countries and regions is the same
+length(is.na(joinedData$country)) == length(is.na(joinedData$Region))
+
+# change to Sicily
+joinedData$country[joinedData$country %in% "Italy & Malta"] <- joinedData$Region[joinedData$country %in% "Italy & Malta"]
+
+# we will later remove the non-European countries, but first check region
+```
+
+
+
+```{r}
+# which plots are not assigned, many of them are located near the coast
+remainingPlots <- joinedData[is.na(joinedData$country),]
+# assign all within a 1 km region to that country
+# check countries not assigned
+ggplot()+ geom_sf(data= remainingPlots) 
+
+# Keep only necessary columns
+remainingPlots_small <- remainingPlots[, c("observation_uuid","geometry")]
+
+# assign to country nearest
+remainingPlots_small_joined <- st_join(remainingPlots_small, medRegions[-20,], join= st_nearest_feature)
+# change to planar because the Netherlands varies
+sf_use_s2(F)
+res <- st_join(remainingPlots_small, medRegions[20,], join = st_within)
+# merge back into the data
+remainingPlots_small_joined[(res$country == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+if(file.exists("../Extra/Intermediate/Distance_region_iNat.csv")){
+  remainingPlots_small_joined <- 
+    read_csv("../Extra/Intermediate/Distance_region_iNat.csv", show_col_types = FALSE)
+} else {
+# distance
+  remainingPlots_small_joined$distance <- NA
+  # check whether the European regions are within 1 km
+  for(i in which(is.na(remainingPlots_small_joined$distance))[1] : nrow(remainingPlots_small_joined)){
+    remainingPlots_small_joined$distance[i] <- st_distance(remainingPlots_small_joined[i,], 
+                                                    medRegions[medRegions$Region==remainingPlots_small_joined$Region[i]
+                                                               &!is.na(medRegions$Region),])}
+  # write to csv to be able to use it later
+  write_csv(remainingPlots_small_joined, "../Extra/Intermediate/Distance_region_iNat.csv")
+}
+
+# give the points without a country their region
+remainingPlots_small_joined$country[is.na(remainingPlots_small_joined$country)] <-
+  remainingPlots_small_joined$Region[is.na(remainingPlots_small_joined$country)]
+
+# remove all distance > 1 km
+remainingPlots_small_joined$country[remainingPlots_small_joined$distance > 1000] <- NA
+remainingPlots_small_joined$Region[remainingPlots_small_joined$distance > 1000] <- NA
+
+
+# assign remaining data to joinedData
+joinedData[is.na(joinedData$country),1:11] <- remainingPlots_small_joined[, 1:11]
+
+# change United Kingdom
+joinedData$country <- gsub("United.Kingdom","United Kingdom",joinedData$country)
+joinedData$country <- gsub("Republic.of.Ireland","Ireland",joinedData$country)
+# change to Sicily
+joinedData$country[joinedData$country %in% "Italy & Malta"] <- 
+  joinedData$Region[joinedData$country %in% "Italy & Malta"]
+
+# check whether the number of countries and regions is the same
+length(is.na(joinedData$country)) == length(is.na(joinedData$Region))
+
+# remove all non-European countries
+nonEU <- joinedData[!joinedData$country %in% europe_regions, ]
+joinedData <- joinedData |> filter(country %in% europe_regions)
+unique(joinedData$country)
+# check this
+# ggplot()+ geom_sf(data= nonEU) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+```
+
+
+```{r}
+# remove non-European countries
+obs <- obs |> filter(observation_uuid %in% joinedData$observation_uuid)
+obs$Country <- joinedData$country[match(obs$observation_uuid, joinedData$observation_uuid)]
+```
+
+
+## 4 Anomaly
+```{r}
+# an anomaly lower than 1 suggests that it is unlikely for the species to be observed there
+summary(obs$anomaly_score)
+
+# remove all with observation anomalies lower than 1
+length(obs$observation_uuid[obs$anomaly_score <= 1])
+obs <- obs |> filter(anomaly_score >= 1)
+```
+
+
+# LINK
+## 1 Taxa
+```{r}
+# load old names from observation
+names <- read_csv("../Data/Names/Names_pollinators_observation.csv", show_col_types = FALSE)
+
+# reduce bees data to European occurences
+bees <- bees[bees$taxon_id %in% obs$taxon_id,]
+
+# assign 
+bees$species <- names$species[match(bees$name, names$name)]
+bees$genus <- names$genus[match(bees$name, names$name)]
+bees$family <- names$family[match(bees$name, names$name)]
+
+# get names that are not registered in the data
+not_bees <- bees[is.na(bees$genus),]
+```
+
+
+## 2 Join
+```{r}
+# observation 
+obs <- left_join(obs, bees, by = c("taxon_id"= "taxon_id"))
+
+# check how many observations we don't know the species of
+sum(is.na(obs$genus))
+```
+
+
+## 3 Save
+```{r}
+# save
+write_csv(obs, "../Data/Observation/iNaturalist_bees.csv")
+```
+
+
+# PICTURES
+## 1 Load
+```{r}
+# read csv
+obs <- read_csv("../Data/Observation/iNaturalist_bees.csv", show_col_types = FALSE)
+  
+# connect with duck 
+con <- dbConnect(duckdb::duckdb(), dbdir = "inat.duckdb")
+duckdb_register(con, "obs", obs)
+
+# read observations
+photos <- dbGetQuery(con, " SELECT * FROM read_csv_auto('../Data/iNaturalist/photos.csv', delim = '\t' )  
+                     WHERE observation_uuid IN ( SELECT observation_uuid  FROM obs) ")
+
+# disconnect
+dbDisconnect(con)
+```
+
+
+## 2 Overview
+```{r}
+# look at data
+head(photos)
+
+# check the licences
+unique(photos$license)
+# these are all still usable for academic purposes
+
+# look at number of pictures available per observation
+summary(photos$position)
+
+# create URLs
+photos$URL <- paste("https://www.inaturalist.org/photos/", photos$photo_id, sep="")
+
+# take unique URLs
+unique_photos <- photos[!duplicated(photos$observation_uuid),]
+
+# check how many observations have an URL
+obs <- left_join(obs, unique_photos[,2:3])
+# check number of observations with images
+sum(is.na(obs$photo_id))
+
+# save
+write_csv(photos,  "../Data/Observation/iNaturalist_photos.csv")
+```
+
