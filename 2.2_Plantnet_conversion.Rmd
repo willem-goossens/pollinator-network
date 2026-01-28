@@ -80,7 +80,10 @@ if(file.exists("../Results/Plantnet_identification.csv")){
 # get observation data again
 id_pol <- as.numeric(names(list))
 id_pol <- id_pol[!id_pol %in% pol_plantnet$ID]
+```
 
+
+```{r}
 # define stable output schema once
 plant_schema <- c("ID", "Score", "Name", "Common_name", "Name_author", "Genus", "Genus_author", "Family", "Family_author", "GBIF_ID", "POWO_ID",
                   "IUCN_ID", "IUCN")

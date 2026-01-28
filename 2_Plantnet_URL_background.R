@@ -4,12 +4,15 @@ library(jsonlite)
 library(dplyr)
 library(readr)
 library(purrr)
+library(stringr)
+library(xml2)
 
 
 # Paths for checkpointing
 results_file <- "iNaturalist_identification.RData"
 denied_file  <- "Permission_denied_iNat.csv"
-batch_size   <- 500  # process 500 obs per batch to avoid overload
+plant_file <- "iNaturalist_host_plants.csv"
+batch_size   <- 100  # process 500 obs per batch to avoid overload
 
 # API key
 api_key <- "2b10bu236VtELMT8bV13UQb73e"
@@ -20,7 +23,8 @@ photos <- read_csv("../Data/Observation/iNaturalist_photos.csv", show_col_types 
 
 # Load previous results if they exist
 if (file.exists(results_file)) results_list <- readRDS(results_file) else results_list <- list()
-if (file.exists(denied_file)) permission_denied <- read_csv(denied_file) else permission_denied <- data.frame(denied = numeric())
+if (file.exists(denied_file)) permission_denied <- read_csv(denied_file, show_col_types = FALSE) else permission_denied <- data.frame(denied = numeric())
+if (file.exists(plant_file)) host_plants <- read_csv(plant_file, show_col_types = FALSE) else host_plants <- data.frame(observation__uuid = character(), plant = character())
 
 already_identified <- c(names(results_list), permission_denied$denied)
 id_pol_all <- unique(obs$observation_uuid)
@@ -41,12 +45,37 @@ buildURL <- function(key, imageURL, organs = 'auto', lang = 'en', no_reject = 't
 # test id
 id <- photos$observation_uuid[1]
 
+# test id for taking also plant
+id <- photos$observation_uuid[photos$photo_id == 1390299]
+
 process_one_id_inat <- function(id, photos, api_key){
   
   imageURL <- photos$photo_id[photos$observation_uuid == id]
   imageURL <- unique(imageURL)
   image_type <- photos$extension[photos$observation_uuid == id]
   image_urls <- paste("https://inaturalist-open-data.s3.amazonaws.com/photos/", imageURL, "/original.", image_type, sep="")
+  
+  # check URL for plant images
+  plant_URL <- paste("https://www.inaturalist.org/photos/", imageURL, sep="")
+  
+  # assess page
+  page <- read_html(plant_URL[1]) 
+  
+  # get table
+  tables <- page %>% html_table()
+  tables <- tables[[2]]
+  tables <- tables[tables$X1 %in% c("Associated observations"),]
+
+  # retrieve species names (are normally between brackets)
+  taxa <- str_extract_all(tables$X2,"\\([A-Z][a-z]+\\s+[×x]?\\s*[a-z]+(?:\\s+[a-z]+)?\\)")[[1]] |> str_remove_all("[()]") |> str_squish()
+  # remove the pollinator species
+  taxa <- taxa[!taxa %in% obs$name[obs$observation_uuid== id]]
+  
+  if(length(taxa > 0)){
+    data <- data.frame(observation__uuid = id, plant = taxa)
+    host_plants <- rbind(host_plants, data)
+    write_csv(host_plants, plant_file)
+  }
   
   if (length(image_urls) < 1) return(list(id = id, denied = TRUE, result = NULL))
   
@@ -89,7 +118,7 @@ process_one_id_inat <- function(id, photos, api_key){
 
 total_ids <- length(id_pol)
 batches <- split(id_pol, ceiling(seq_along(id_pol)/batch_size))
-batches <- batches[1]
+batches <- batches[1:5]
 
 begin <- Sys.time()
 

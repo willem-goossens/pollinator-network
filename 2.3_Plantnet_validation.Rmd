@@ -15,92 +15,366 @@ Load packages
 ```{r}
 library(tidyverse)
 library(plantnet)
-library(httr)
-library(utils)
-library(jsonlite)
+library(rgbif)
+library(kewr)
 ```
 
 Load data
 ```{r}
+# identified species
 pol_plantnet <- read.csv("../Results/Plantnet_identification.csv")
+pol_plantnet_observation <- pol_plantnet
+# overall dataset
 pol <- read.csv("../Data/Observation/observation_org_bees.csv")
+
+# species names
+names <- read_csv("../Data/Names/Names_plants_observation.csv", show_col_types = FALSE)
+names_obs <- names
 ```
 
 
 # 2 LINK
 ## 2.1 Dataset
 ```{r}
-# link
-colnames(pol_plantnet) <- paste0(colnames(pol_plantnet), "_Plantnet")
-pol[,28:34] <- pol_plantnet[match(pol$ID, pol_plantnet$ID_Plantnet),]
+# get smaller dataframe
+pol_plantnet <- pol_plantnet |> select(ID, Score, Name, Genus, Family, GBIF_ID, POWO_ID, IUCN_ID, Organ)
 
-# create dataset to validate the results
-validate <- pol[!is.na(pol$Score_Plantnet),]
-validate$GBIF_Name_Plantnet <-NA
-validate$GBIF_Genus_Plantnet <- NA
-validate$GBIF_Family_Plantnet <- NA
+# link subspecies
+pol_plantnet$obs_subspecies <- names$subspecies[match(pol_plantnet$Name ,names$subspecies)]
+
+# link species
+pol_plantnet$obs_species <- names$species[match(pol_plantnet$Name ,names$species)]
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$taxa)]
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$GBIF)]
+# subset data
+names_subset <- names[!is.na(names$subspecies),]
+# add subspecies
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- 
+  names_subset$species[match(pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_species)], names_subset$subspecies)]
+
+# link genus
+pol_plantnet$obs_genus <- names$genus[match(pol_plantnet$Name ,names$genus)]
+# subset data
+names_subset <- names[!is.na(names$species),]
+# add species
+pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- 
+  names_subset$genus[match(pol_plantnet$obs_species[is.na(pol_plantnet$obs_genus)], names_subset$species)]
+
+# link family
+pol_plantnet$obs_family <- names$family[match(pol_plantnet$Name ,names$family)]
+# subset data
+names_subset <- names[!is.na(names$genus),]
+# add genus
+pol_plantnet$obs_family[is.na(pol_plantnet$obs_family)] <- 
+  names_subset$family[match(pol_plantnet$obs_genus[is.na(pol_plantnet$obs_family)], names_subset$genus)]
+
+# check lengths
+sum(!is.na(pol_plantnet$obs_subspecies))
+sum(!is.na(pol_plantnet$obs_species))
+sum(!is.na(pol_plantnet$obs_genus))
+sum(!is.na(pol_plantnet$obs_family))
+
+# assign highest retrieved name 
+pol_plantnet$names <- pol_plantnet$obs_subspecies
+pol_plantnet$names[is.na(pol_plantnet$names)] <- pol_plantnet$obs_species[is.na(pol_plantnet$names)]
+pol_plantnet$names[is.na(pol_plantnet$names)] <- pol_plantnet$obs_genus[is.na(pol_plantnet$names)]
+
+# assign level
+pol_plantnet$rank[!is.na(pol_plantnet$obs_subspecies)] <- names$type[match(pol_plantnet$names[!is.na(pol_plantnet$obs_subspecies)], names$subspecies)]
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_species)] <- 
+  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_species)], names$species)]
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_genus)] <- 
+  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_genus)], names$genus)]
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_family)] <- 
+  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_family)], names$family)]
+# save
+sum(!is.na(pol_plantnet$rank))
+
+# there are some genera not correct
+check_genera <- pol_plantnet[!duplicated(pol_plantnet$obs_genus) & !is.na(pol_plantnet$obs_genus),]
+check_genera <- check_genera[!is.na(vegdata::parse.taxa(check_genera$obs_genus)$epi1),]
+check_genera$obs_genus <- vegdata::parse.taxa(check_genera$obs_genus)$genus
+
+# change in pol_plantnet
+pol_plantnet$obs_genus[pol_plantnet$Name %in% check_genera$Name] <- 
+  check_genera$obs_genus[match(pol_plantnet$Name[pol_plantnet$Name %in% check_genera$Name], check_genera$Name)]
 ```
 
 
-## 2.2 Validate names
+## 2.2 GBIF
 ```{r}
-# take unique species names
-names <- unique(validate[, c(30,33,34:37)])
+# saved names
+# write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
 
-# asign GBIF names
-i=1
-for(i in 1: length(names$Name_Plantnet)){
-  if(is.na(names$GBIF_ID_Plantnet[i])) next
-  res <- name_usage( key = names$GBIF_ID_Plantnet[i])
-  names$GBIF_Name_Plantnet[i] <- res$data$species
-  names$GBIF_Genus_Plantnet[i] <- res$data$genus
-  names$GBIF_Family_Plantnet[i] <- res$data$family
+# get unique plants
+plantnet_names <- pol_plantnet[!duplicated(pol_plantnet$Name), c(3, 14, 6, 7)]
+
+# names
+names <- plantnet_names[is.na(plantnet_names$names),]
+
+# assign GBIF names based on data
+for(i in 1: nrow(names)){
+  if(is.na(names$GBIF_ID[i])) next
+  
+  # get synonym data
+  acc <- name_usage( key = names$GBIF_ID[i])
+  # add name of accepted species
+  names$GBIF[i] <- acc$data$canonicalName
+  names$GBIF_genus[i] <- acc$data$genus
+  names$GBIF_family[i] <- acc$data$family
+  names$GBIF_rank[i] <- acc$data$rank
+  names$GBIF_kingdom[i] <- acc$data$kingdom
 }
-
-
-# look whether these are the accepted names
-gbif_plantnet <- name_backbone_checklist(names$GBIF_Name_Plantnet)
-# check whether any of these is a synonym
-any(gbif_plantnet$status != "ACCEPTED" & !is.na(gbif_plantnet$status))
-# assign
-validate$GBIF_Name_Plantnet <- names$GBIF_Name_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
-validate$GBIF_Genus_Plantnet <- names$GBIF_Genus_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
-validate$GBIF_Family_Plantnet <- names$GBIF_Family_Plantnet[match(validate$Name_Plantnet, names$Name_Plantnet)]
-
-# check plantnet names of thos not yet 
-names <- names[is.na(names$GBIF_Name_Plantnet),]
-i=1
-# lookup in powo if not in GBIF
-powo <- names[!is.na(names$POWO_ID_Plantnet),]
-for(i in 1: length(powo$Name_Plantnet)) {
-  powo_name <- lookup_powo(powo$POWO_ID_Plantnet[i])
-  if(powo_name$taxonomicStatus[i]=="Accepted"){
-    names$GBIF_Name_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$name
-    names$GBIF_Genus_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$genus
-    names$GBIF_Family_Plantnet[!is.na(names$POWO_ID_Plantnet)][i] <- powo_name$family
-
-  } 
-}
-
-# read names
-names_definition <- read_csv("../Extra/Names/plant_names.csv", show_col_types = FALSE)
-
-gbif_plantnet <- name_backbone_checklist(names$Name_Plantnet)
-
-lookup_powo(names$POWO_ID_Plantnet[2])
-# look at difference between both columns
-none <- name_backbone_checklist(validate$Name_Plantnet[is.na(validate$GBIF_ID_Plantnet)])
-none <- cbind(c(validate$ID[is.na(validate$GBIF_ID_Plantnet)]), none)
-colnames(none)[1] <- "ID"
-i=1
-for(i in 1: length(none$usageKey)){
-  if(is.na(none$acceptedUsageKey[i])) next
-  res <- name_usage( key = none$acceptedUsageKey[i])
-  validate$GBIF_Name_Plantnet[validate$ID %in% none$ID[i]] <- res$data$species
-  validate$GBIF_Genus_Plantnet[validate$ID %in% none$ID[i]] <- res$data$genus
-  validate$GBIF_Family_Plantnet[validate$ID %in% none$ID[i]] <- res$data$family
-}
-
-name_usage( key = 3042506)$data
 ```
+
+
+```{r}
+# Which do not yet have an accepted name
+names$names <- names$GBIF
+names$names[is.na(names$names)] <- names$Name[is.na(names$names)]
+names$names <- gsub(" spp.","", names$names)
+names$names <- gsub("\\s+cv\\..*$", "", names$names)
+
+
+lacking_names_gbif <- names[is.na(names$GBIF_ID),]
+# check now against gbif
+gbif <-  name_backbone_checklist(lacking_names_gbif$names[1])
+for(i in 1: 2){
+  # boundaries
+  begin <- 1 + floor(length(lacking_names_gbif$Name)/2*(i-1))
+  end <- floor(length(lacking_names_gbif$Name)/2 * i)
+  # run 
+  data <- name_backbone_checklist(lacking_names_gbif$names[begin: end])
+  gbif <- bind_rows(gbif, data)
+}
+
+# remove duplicates
+gbif <- gbif[!duplicated(gbif$verbatim_name),]
+
+# check how many
+genus_idx <- is.na(vegdata::parse.taxa(lacking_names_gbif$names)$epi1)
+
+# check accepted species and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType == "EXACT") | genus_idx) & !is.na(gbif$usageKey), ]
+
+# assign
+lacking_names_gbif$GBIF <- gbif_accepted$species[match(lacking_names_gbif$names, gbif_accepted$verbatim_name)]
+lacking_names_gbif$GBIF_genus <- gbif_accepted$genus[match(lacking_names_gbif$names, gbif_accepted$verbatim_name)]
+lacking_names_gbif$GBIF_family <- gbif_accepted$family[match(lacking_names_gbif$names, gbif_accepted$verbatim_name)]
+lacking_names_gbif$GBIF_rank <- gbif_accepted$rank[match(lacking_names_gbif$names, gbif_accepted$verbatim_name)]
+lacking_names_gbif$GBIF_kingdom <- gbif_accepted$kingdom[match(lacking_names_gbif$names, gbif_accepted$verbatim_name)]
+
+# check remaining in gbif
+gbif_remaining <- gbif[!gbif$canonicalName %in% gbif_accepted$canonicalName,]
+gbif_synonyms <- gbif_remaining[(gbif_remaining$status=="SYNONYM"&!is.na(gbif_remaining$usageKey)&gbif_remaining$matchType=="EXACT" | gbif_remaining$matchType=="FUZZY"),]
+
+# assign
+lacking_names_gbif$GBIF[is.na(lacking_names_gbif$GBIF)] <- gbif_synonyms$species[match(lacking_names_gbif$names[is.na(lacking_names_gbif$GBIF)],
+                                                                                       gbif_synonyms$verbatim_name)]
+lacking_names_gbif$GBIF_genus[is.na(lacking_names_gbif$GBIF_genus)] <- gbif_synonyms$genus[match(lacking_names_gbif$names[is.na(lacking_names_gbif$GBIF_genus)],
+                                                                                           gbif_synonyms$verbatim_name)]
+lacking_names_gbif$GBIF_family[is.na(lacking_names_gbif$GBIF_family)] <- gbif_synonyms$family[match(lacking_names_gbif$names[is.na(lacking_names_gbif$GBIF_family)],
+                                                                                             gbif_synonyms$verbatim_name)]
+lacking_names_gbif$GBIF_rank[is.na(lacking_names_gbif$GBIF_rank)] <- gbif_synonyms$rank[match(lacking_names_gbif$names[is.na(lacking_names_gbif$GBIF_rank)],
+                                                                                         gbif_synonyms$verbatim_name)]
+lacking_names_gbif$GBIF_kingdom[is.na(lacking_names_gbif$GBIF_kingdom)] <- gbif_synonyms$kingdom[match(lacking_names_gbif$names[is.na(lacking_names_gbif$GBIF_kingdom)],
+                                                                                               gbif_synonyms$verbatim_name)]
+
+# assign this already
+names[is.na(names$GBIF_ID),] <- lacking_names_gbif
+```
+
+
+```{r}
+# check remaining
+lacking_names_gbif <- names[is.na(names$GBIF_genus),]
+
+# add all genera
+genus_dataframe <- data.frame(old = c("Taraxacum sect. Taraxacum", "Pinus",
+                                      "Mutarda arvensis","Gyrophyllum palmatum", "Salix",
+                                      "Viola", "Oreomecon crocea","Gyrophyllum verticillatum",
+                                      "Oreomecon olchonensis","Troncosoa seriphioides",
+                                      "Gyrophyllum tripteris","Gyrophyllum major", "Dahlia",
+                                      "Bougainvillea","Phalaenopsis","Valeriana orientalis",
+                                      "Mutarda carinata"),
+                              species = c(NA, NA, "Sinapis arvensis","Anacis palmata", NA, NA,
+                                          "Oreomecon crocea","Anacis verticillata",
+                                          "Oreomecon olchonensis","Troncosoa seriphioides",
+                                          "Anacis tripteris","Anacis major", NA, NA, NA,
+                                          "Valeriana orientalis", "Brassica carinata"),
+                              genus= c("Taraxacum", "Pinus", "Sinapis", "Anacis", "Salix", "Viola",
+                                       "Oreomecon","Anacis", "Oreomecon","Troncosoa","Anacis",
+                                       "Anacis", "Dahlia","Bougainvillea", "Phalaenopsis",
+                                       "Valeriana","Brassica"),
+                              family = c("Asteraceae", "Pinaceae","Brassicaceae", "Asteraceae",
+                                         "Salicaceae","Violaceae", "Papaveraceae","Asteraceae",
+                                         "Papaveraceae","Verbenaceae","Asteraceae","Asteraceae",
+                                         "Asteraceae", "Nyctaginaceae","Orchidaceae",
+                                         "Caprifoliaceae","Brassicaceae"),
+                              rank = c("COMPLEX", "GENUS", "SPECIES", "SPECIES", "GENUS",
+                                       "GENUS", "SPECIES","SPECIES","SPECIES", "SPECIES",
+                                       "SPECIES","SPECIES", "GENUS", "GENUS", "GENUS", 
+                                       "SPECIES", "SPECIES"))
+
+# assign
+lacking_names_gbif$GBIF <- genus_dataframe$species[match(lacking_names_gbif$names, genus_dataframe$old)]
+lacking_names_gbif$GBIF_genus <- genus_dataframe$genus[match(lacking_names_gbif$names, genus_dataframe$old)]
+lacking_names_gbif$GBIF_family <- genus_dataframe$family[match(lacking_names_gbif$names, genus_dataframe$old)]
+lacking_names_gbif$GBIF_rank <- genus_dataframe$rank[match(lacking_names_gbif$names, genus_dataframe$old)]
+lacking_names_gbif$GBIF_kingdom <- "PLANTAE"
+
+# assign
+names[is.na(names$GBIF_genus),] <- lacking_names_gbif
+#write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
+```
+
+
+## 2.3 Assign
+```{r}
+# assign names
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$GBIF[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)], names$Name)]
+pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- names$GBIF_genus[match(pol_plantnet$Name[is.na(pol_plantnet$obs_genus)], names$Name)]
+pol_plantnet$obs_family[is.na(pol_plantnet$obs_family)] <- names$GBIF_family[match(pol_plantnet$Name[is.na(pol_plantnet$obs_family)], names$Name)]
+pol_plantnet$rank[is.na(pol_plantnet$rank)] <- tolower(names$GBIF_rank[match(pol_plantnet$Name[is.na(pol_plantnet$rank)], names$Name)])
+
+pol_plantnet$
+```
+
+
+# 3 VALIDATION
+## 3.1 Pollination
+```{r}
+# assign subspecies
+pol$obs_subspecies[!is.na(pol$plant)] <- names_obs$subspecies[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+pol$obs_species[!is.na(pol$plant)] <- names_obs$species[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+pol$obs_genus[!is.na(pol$plant)] <- names_obs$genus[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+pol$obs_family[!is.na(pol$plant)] <- names_obs$family[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+pol$obs_rank[!is.na(pol$plant)] <- names_obs$type[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+
+# plantnet data
+pol$plantnet_subspecies <- pol_plantnet$obs_subspecies[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_species <- pol_plantnet$obs_species[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_genus <- pol_plantnet$obs_genus[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_family <- pol_plantnet$obs_family[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_rank <-  pol_plantnet$rank[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_score <-  pol_plantnet$Score[match(pol$id, pol_plantnet$ID)]
+```
+
+
+## 3.2 Compare
+```{r}
+# get all data with plant data
+validation <- pol[!is.na(pol$plant) & !is.na(pol$plantnet_family),]
+```
+
+
+```{r}
+# get multiple score levels
+score_levels <- data.frame(score_levels = c(0,0.30,0.50,0.60,0.70,0.80,0.90))
+score_levels_species <- data.frame(score_levels = c(0,0.30,0.50,0.60,0.70,0.80,0.90))
+score_levels_species$type <- "Species"
+score_levels_genus <- data.frame(score_levels = c(0,0.30,0.50,0.60,0.70,0.80,0.90))
+score_levels_genus$type <- "Genus"
+score_levels_family <- data.frame(score_levels = c(0,0.30,0.50,0.60,0.70,0.80,0.90))
+score_levels_family$type <- "Family"
+
+# Species
+validation_species <- validation[!is.na(validation$obs_species) & !is.na(validation$plantnet_rank),]
+for(i in 1: nrow(score_levels)){
+  data <- validation_species[validation_species$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_species$score[i] <- nrow(data[data$obs_species==data$plantnet_species, ])/nrow(data)
+  score_levels_species$n[i] <- nrow(data)
+  score_levels_species$rel[i] <- nrow(data)/nrow(validation_species)
+}
+
+
+# Genus
+validation_genus <- validation[!is.na(validation$obs_genus) & !is.na(validation$plantnet_rank),]
+for(i in 1: nrow(score_levels)){
+  data <- validation_genus[validation_genus$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_genus$score[i] <- nrow(data[data$obs_genus==data$plantnet_genus, ])/nrow(data)
+  score_levels_genus$n[i] <- nrow(data)
+  score_levels_genus$rel[i] <- nrow(data)/nrow(validation_genus)
+}
+
+
+# Family
+validation_family <- validation[!is.na(validation$obs_family) & !is.na(validation$plantnet_rank),]
+for(i in 1: nrow(score_levels)){
+  data <- validation_family[validation_family$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_family$score[i] <- nrow(data[data$obs_family==data$plantnet_family, ])/nrow(data)
+  score_levels_family$n[i] <- nrow(data)
+  score_levels_family$rel[i] <- nrow(data)/nrow(validation_family)
+}
+
+score_levels <- rbind(score_levels_species, score_levels_genus, score_levels_family)
+score_levels$type <- factor( score_levels$type, levels = c("Species", "Genus", "Family") )
+
+# plot this
+ggplot(data = score_levels, aes(x= type, y= score, group= score_levels, fill= factor(score_levels))) +
+  geom_col(position="dodge")+
+  scale_fill_brewer(palette = "Set1", name = "Score thresholds")+
+  ggpubr::theme_pubr()+
+  theme(legend.position="right", legend.box = "vertical", legend.title.position = "top")+
+  theme(legend.title = element_text(hjust = 0.5))+
+  xlab(NULL)+
+  ylab("Pl@ntNet Reliability Score")+ 
+  guides(fill = guide_legend(ncol = 1))
+```
+
+
+```{r}
+# how many observations that were given to genus level are now until species
+validation_improved <- validation[validation$obs_rank=="genus" & !is.na(validation$plantnet_rank),]
+summary(validation_improved$plantnet_score)
+
+# which are also left
+validation_improved <- validation[is.na(validation$obs_species) & validation$obs_rank!="genus"& validation$obs_rank!="family" &
+                                    !is.na(validation$plantnet_rank),]
+```
+
+## 3.3 Data
+```{r}
+# get all relevant data
+interactions <- pol[!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=70 ),]
+
+# assign species
+interactions$plant_taxa <- interactions$obs_species
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_species[is.na(interactions$plant_taxa)] 
+interactions$plant_rank_final[!is.na(interactions$plant_taxa)] <- "Species"
+# remaining can be genera
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$obs_genus[is.na(interactions$plant_taxa)] 
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_genus[is.na(interactions$plant_taxa)] 
+interactions$plant_rank_final[!is.na(interactions$plant_taxa) & is.na(interactions$plant_rank_final)] <- "Genus"
+# remaining can be genera
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$obs_family[is.na(interactions$plant_taxa)] 
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_family[is.na(interactions$plant_taxa)] 
+interactions$plant_rank_final[!is.na(interactions$plant_taxa) & is.na(interactions$plant_rank_final)] <- "Family"
+
+# reduce final dataset
+interactions <- interactions |> select(id, date, time, lat, lng, country, name, family, plant_taxa, plant_rank_final)
+interactions <- interactions |> mutate(time_period = cut(as.Date(date), breaks = as.Date(c("1995-01-01","2005-01-01","2015-01-01","2025-12-31")),
+                                                         include.lowest = TRUE))
+                                                        
+```
+
+
+```{r}
+# create network
+network_interaction <- interactions |>  group_by(name, plant_taxa, time_period) |> summarize(total_interactions = n(), .groups = 'drop')
+
+# look at number of interactions taken into account
+threshold <- data.frame(level = c(1,2,3,4,5,10))
+for(i in 1: nrow(threshold)){
+  threshold$n[i] <- nrow(network_interaction[network_interaction$total_interactions >= threshold$level[i],])
+}
+
+# look at data over time
+plot_data <- network_interaction |> group_by(time_period) |> summarise(n= n())
+```
+
+
+
+
+
 
