@@ -1,0 +1,192 @@
+---
+title: "Metadata generation"
+author: "Willem Goossens"
+date: "2026-01-29"
+output: html_document
+---
+
+# 1 Start
+## 1.1 Load data
+Clear data
+```{r}
+rm(list = ls())
+gc()
+```
+
+Load packages
+```{r}
+library(tidyverse)
+library(sf)
+library(sp)
+```
+
+Load interactions
+```{r}
+interactions <- read_csv("../Results/Interaction_dataset.csv", show_col_types = FALSE)
+```
+
+
+## 1.2 Country
+Assign country Euro + MED
+```{r}
+# reduce dataset
+coord <- interactions |> select("id", "country","lat", "lng")
+colnames(coord)[2] <- "observation_country"
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+
+# check regions
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# Assign all plots which are within one of the regions to the given region
+sf_use_s2(T) #S2 can provide better performance for certain types of spatial operations, especially when dealing with large spatial datasets.
+joinedData <- st_join(coord, medRegions[-20,], join = st_within)
+
+# There is something awry with the geometry of the Netherlands, this is why we treat it specially here
+sf_use_s2(F)
+res <- st_join(coord, medRegions[20,], join = st_within)
+# Merge the Netherlands back into the overall data
+# use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
+joinedData[(res$Region == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+# check how many not assigned
+sum(is.na(joinedData$Region))/nrow(joinedData)
+```
+
+
+Change some names
+```{r}
+# give the points without a country their region
+joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+
+```
+
+
+Assign remaining
+```{r}
+# which plots are not assigned, many of them are located near the coast
+remainingPlots <- joinedData[is.na(joinedData$country),]
+# assign all to closest region
+remainingPlots <- st_join(remainingPlots[, 1:3], medRegions[-20,], join = st_nearest_feature)
+
+# for Netherlands, check again
+# There is something awry with the geometry of the Netherlands, this is why we treat it specially here
+sf_use_s2(F)
+res <- st_join(remainingPlots[remainingPlots$observation_country=="Netherlands", 1:3], medRegions[20,], join = st_nearest_feature)
+# Merge the Netherlands back into the overall data
+# use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
+remainingPlots[(remainingPlots$observation_country == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+# assign again
+joinedData[is.na(joinedData$country),] <- remainingPlots
+```
+
+
+```{r}
+# give the points without a country their region
+joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+
+# change United Kingdom
+joinedData$country <- gsub("United.Kingdom","United Kingdom",joinedData$country)
+joinedData$country <- gsub("Republic.of.Ireland","Ireland",joinedData$country)
+countries <- unique(joinedData$country)
+
+# check whether the number of countries and regions is the same
+sum(is.na(joinedData$country)) == sum(is.na(joinedData$Region))
+
+# change to Sicily
+joinedData$country[joinedData$country %in% "Italy & Malta"] <- joinedData$Region[joinedData$country %in% "Italy & Malta"]
+# change to Turkey 
+joinedData$country[joinedData$country %in% "Greece & Turkey"] <- "Greece"
+```
+
+
+Check overlap countries and Euro+MED
+```{r}
+# how many are the same
+sum(joinedData$observation_country == joinedData$country)/length(joinedData$id)
+
+# which not
+remaining <- joinedData[joinedData$observation_country != joinedData$country, ]
+
+# plot data to check
+ggplot()+ geom_sf(data= remaining) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+
+# create box around Europe
+europe_bbox <- st_bbox(c(xmin = -30, xmax = 80, ymin = 20, ymax = 90))
+europe_polygon <- st_as_sfc(europe_bbox)
+
+# crop to regions
+sf_use_s2(F)
+joinedData_mainland <- st_crop(joinedData, europe_polygon)
+joinedData_mainland <- st_crop(joinedData_mainland, medRegions, crop=F)
+sf_use_s2(T)
+
+# remove some
+removed <- joinedData[!joinedData$id %in% joinedData_mainland$id,] 
+joinedData <- joinedData_mainland
+interactions <- interactions[interactions$id %in% joinedData$id, ]
+
+# plot the removed ones
+ggplot()+ geom_sf(data= removed) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+
+# we will use our own classication to align with iNaturalist
+interactions$euromed_region <- joinedData$country[match(interactions$id, joinedData$id)]
+```
+
+
+## 2.3 Ecoregions
+```{r}
+# reduce dataset
+coord <- interactions |> select("id", "country","lat", "lng")
+colnames(coord)[2] <- "observation_country"
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+
+# read data
+eco <- read_sf("../Extra/Regions/Ecoregions/Ecoregions2017.shp")
+# transform CSR
+eco <- st_transform(eco, CRS("+proj=longlat +datum=WGS84"))
+
+# only get Europe realm
+eco <- eco[eco$REALM =="Palearctic",]
+
+# crop to regions
+sf_use_s2(F)
+eco <- st_crop(eco, europe_polygon)
+eco <- st_crop(eco, medRegions, crop=F)
+sf_use_s2(T)
+
+
+# plot
+ggplot() + 
+  geom_sf(data = eco, size = 0.5, aes(fill = COLOR),show.legend = FALSE) + 
+  coord_sf()+
+  theme_minimal()+
+  geom_sf(data = coord)
+
+# assign 
+joinedData <- st_join(coord, eco, join = st_nearest_feature)
+
+# count
+eco_names <- joinedData |> group_by(ECO_NAME, BIOME_NAME) |> summarise(n = n())
+biome_names <- joinedData |> group_by(BIOME_NAME) |> summarise(n = n())
+
+# assign based on number of observations
+joinedData$region[joinedData$ECO_NAME %in% eco_names$ECO_NAME[eco_names$n >= 2000]]<-joinedData$ECO_NAME[joinedData$ECO_NAME %in% eco_names$ECO_NAME[eco_names$n >= 2000]]
+joinedData$region[is.na(joinedData$region)] <- joinedData$BIOME_NAME[is.na(joinedData$region)]
+
+# check again numbers
+region_names <- joinedData |> group_by(region) |> summarise(n = n())
+
+# assign to interactions
+interactions$eco_region <- joinedData$region[match(interactions$id, joinedData$id)]
+interactions$eco_name <- joinedData$ECO_NAME[match(interactions$id, joinedData$id)]
+interactions$eco_biome <- joinedData$BIOME_NAME[match(interactions$id, joinedData$id)]
+```
+
