@@ -12,7 +12,7 @@ library(xml2)
 results_file <- "iNaturalist_identification.RData"
 denied_file  <- "Permission_denied_iNat.csv"
 plant_file <- "iNaturalist_host_plants.csv"
-batch_size   <- 100  # process 500 obs per batch to avoid overload
+batch_size   <- 200  # process 500 obs per batch to avoid overload
 
 # API key
 api_key <- "2b10bu236VtELMT8bV13UQb73e"
@@ -44,7 +44,7 @@ buildURL <- function(key, imageURL, organs = 'auto', lang = 'en', no_reject = 't
 
 # test id
 id <- photos$observation_uuid[1]
-
+id <- "7abe4034-d427-41e7-aed8-3af34a654248"
 # test id for taking also plant
 id <- photos$observation_uuid[photos$photo_id == 1390299]
 

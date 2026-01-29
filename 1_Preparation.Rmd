@@ -209,6 +209,12 @@ names <- read_csv("../Data/Names/Names_pollinators_observation.csv")
 
 # assign
 obs$name <- names$name[match(obs$`scientific name`, names$`scientific name`)]
+obs$pol_subspecies <- names$subspecies[match(obs$`scientific name`, names$`scientific name`)]
+obs$pol_species <- names$species[match(obs$`scientific name`, names$`scientific name`)]
+obs$pol_genus <- names$genus[match(obs$`scientific name`, names$`scientific name`)]
+obs$pol_family <- names$family[match(obs$`scientific name`, names$`scientific name`)]
+obs$pol_rank <- names$type[match(obs$`scientific name`, names$`scientific name`)]
+
 
 # check number of new species
 length(unique(names$name))
@@ -278,9 +284,15 @@ gbif <- gbif[!duplicated(gbif$verbatim_name),]
 
 ## 2.2 Assign
 ```{r}
+# remove all plant names
+names <- names[names$taxa %in% gbif$verbatim_name[gbif$kingdom == "Plantae" | is.na(gbif$kingdom)],]
+gbif <- gbif[gbif$kingdom == "Plantae" | is.na(gbif$kingdom),]
+
 # assign accepted names to name database 
 gbif$status[gbif$status=="DOUBTFUL" & !is.na(gbif$status)] <- "ACCEPTED"
 gbif_accepted <- gbif[gbif$status=="ACCEPTED" & !is.na(gbif$status),]
+gbif_higher_rank <- gbif_accepted[gbif_accepted$matchType == "HIGHERRANK",]
+gbif_accepted <- gbif_accepted[gbif_accepted$matchType == "EXACT",]
 # assign names
 names$GBIF <- gbif_accepted$canonicalName[match(names$taxa, gbif_accepted$verbatim_name)]
 
@@ -290,12 +302,133 @@ names$genus <- gbif_accepted$genus[match(names$taxa, gbif_accepted$verbatim_name
 names$family <- gbif_accepted$family[match(names$taxa, gbif_accepted$verbatim_name)]
 names$kingdom <- gbif_accepted$kingdom[match(names$taxa, gbif_accepted$verbatim_name)]
 
-# remove all not plants
-names <- names[names$kingdom== "Plantae" | is.na(names$kingdom),]
-
 # add level
 names$type <- tolower(gbif_accepted$rank[match(names$taxa, gbif_accepted$verbatim_name)])
 ```
+
+
+```{r}
+# check higher rank complexes
+double_species <- gbif_higher_rank |>filter(str_detect(verbatim_name, "\\+"))
+double_species <- double_species |>  mutate(species_list = str_extract_all(verbatim_name,  "[A-Z][a-z]+(?:\\s+(?:[x×]\\s+)?[a-z]+)?"))
+double_species <- double_species |> mutate(species_wide = map(species_list,  ~ setNames(  .x, paste0("species_", seq_along(.x)) ))) |>
+  unnest_wider(species_wide)
+
+# check names official
+double_species_check1 <-  name_backbone_checklist(double_species$species_1)
+double_species_check1$original <- double_species$verbatim_name
+double_species_check2 <-  name_backbone_checklist(double_species$species_2)
+double_species_check2$original <- double_species$verbatim_name
+double_species_check3 <-  name_backbone_checklist(double_species$species_3)
+double_species_check3$original <- double_species$verbatim_name
+
+# merge
+double_species$checked <- paste(double_species_check1$canonicalName, double_species_check2$canonicalName, double_species_check3$canonicalName, sep = " + " )
+double_species$checked <- gsub(" ?\\+ ?NA", "", double_species$checked)
+
+# genus
+double_species$genus_checked <- double_species_check1$genus
+double_species$genus_checked[double_species$verbatim_index %in% c(153)] <- c("Tripleurospermum + Matricaria")
+double_species$genus_checked[double_species$verbatim_index %in% c(135)] <- c("Brassica + Sinapis")
+double_species$checked[double_species$verbatim_index %in% c(135)] <- NA
+
+# family
+double_species$family_checked <- double_species_check1$family
+
+# kingdom
+double_species$kingdom <- double_species_check1$kingdom
+
+# names
+names$GBIF[names$taxa %in% double_species$verbatim_name] <- double_species$checked[match(names$taxa[names$taxa %in% double_species$verbatim_name],
+                                                                                         double_species$verbatim_name)]
+# genus
+names$genus[names$taxa %in% double_species$verbatim_name] <- double_species$genus_checked[match(names$taxa[names$taxa %in% double_species$verbatim_name],
+                                                                                         double_species$verbatim_name)]
+# family
+names$family[names$taxa %in% double_species$verbatim_name] <- double_species$family_checked[match(names$taxa[names$taxa %in% double_species$verbatim_name],
+                                                                                         double_species$verbatim_name)]
+# kingdom
+names$kingdom[names$taxa %in% double_species$verbatim_name] <- double_species$kingdom[match(names$taxa[names$taxa %in% double_species$verbatim_name],
+                                                                                         double_species$verbatim_name)]
+# type
+names$type[names$taxa %in% double_species$verbatim_name] <- "complex"
+names$type[names$taxa %in% c("Brassica + Sinapis")] <- "complex genus"
+
+```
+
+
+```{r}
+# check remaining higher ranks
+gbif_higher_rank <- gbif_higher_rank[!gbif_higher_rank$verbatim_name %in% double_species$verbatim_name,]
+higher_rank_genera <- gbif_higher_rank[is.na(vegdata::parse.taxa(gbif_higher_rank$verbatim_name)$epi1),]
+
+# assign these
+names$genus[is.na(names$genus)] <- higher_rank_genera$genus[match(names$taxa[is.na(names$genus)], higher_rank_genera$verbatim_name)]
+names$family[is.na(names$family)]<- higher_rank_genera$family[match(names$taxa[is.na(names$family)], higher_rank_genera$verbatim_name)]
+names$type[is.na(names$type)]<- tolower(higher_rank_genera$rank[match(names$taxa[is.na(names$type)], higher_rank_genera$verbatim_name)])
+names$kingdom[is.na(names$kingdom)]<- higher_rank_genera$kingdom[match(names$taxa[is.na(names$kingdom)], higher_rank_genera$verbatim_name)]
+
+# check species
+higher_rank_species <- gbif_higher_rank[!gbif_higher_rank$verbatim_name %in% higher_rank_genera$verbatim_name,]
+
+# check against powo
+# check in powo 
+names_powo <- match_knms(higher_rank_species$verbatim_name)
+names_powo <- names_powo$results
+
+# safe depending on types
+safe_names <- c()
+multiple <- c()
+none <- c()
+
+# results can be false true multiple_matches
+for(i in 1: length(names_powo)){
+  if(names_powo[[i]][[2]]== "true"){
+    safe_names <- rbind(safe_names, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="multiple_matches"){
+    multiple <- rbind(multiple, names_powo[[i]][[1]])
+  } else if(names_powo[[i]][[2]]=="false"){
+    none <- rbind(none, names_powo[[i]][[1]])
+  }
+}
+
+# assign the save names
+names$GBIF[names$taxa %in% safe_names] <- safe_names[match(names$taxa[names$taxa %in% safe_names], safe_names)] 
+names$genus[names$taxa %in% safe_names] <- vegdata::parse.taxa(names$taxa[names$taxa %in% safe_names])$genus
+names$genus[names$taxa %in% safe_names] <- vegdata::parse.taxa(names$taxa[names$taxa %in% safe_names])$genus
+names$family[names$taxa %in% higher_rank_species$verbatim_name] <- 
+  higher_rank_species$family[match(names$taxa[names$taxa %in% higher_rank_species$verbatim_name], higher_rank_species$verbatim_name)]
+names$kingdom[names$taxa %in% higher_rank_species$verbatim_name] <- "Plantae"
+
+# check none
+none_change <- data.frame(old = c("Anchusa undulata subsp. hybrida", "Clinopodium calamintha subsp. spruneri", "Salix hybrid", 
+                                  "Trifolium medium subsp. medium"),
+                          new = c("Anchusa hybrida","Clinopodium nepeta subsp. spruneri", "Salix", "Trifolium medium"))
+# adapt data frame
+none_change <- rbind(none_change, data.frame( old = none[! none %in% none_change$old], new =  none[! none %in% none_change$old]))
+none_change$type <- ifelse(grepl("subsp.", none_change$new), "subspecies","species")
+none_change$type[c(3,6,11)] <- c("genus","variety","hybrid")
+
+# also look at multiple
+multiple_change <- data.frame(old= c(multiple),
+                              new = c("Allium porrum","Symphyotrichum lanceolatum", "Psephellus dealbatus",  "Lophiolepis ferox", "Cytisus hirsutus",
+                                      "Erica carnea", "Ageratina altissima", "Trommsdorffia uniflora", "Limbarda crithmoides","Pentanema spiraeifolium",
+                                      "Pentanema hirtum", "Leontodon crispus","Lotus tenuis","Lotus uliginosus","Solanum lycopersicum",
+                                      "Trifolium speciosum"))
+
+# multiple change
+multiple_change$type <- "species"
+
+# bind
+none_change <- rbind(none_change, multiple_change)
+
+# assign the save names
+names$GBIF[names$taxa %in% none_change$old] <- none_change$new[match(names$taxa[names$taxa %in% none_change$old], none_change$old)] 
+names$genus[names$taxa %in% none_change$old] <- vegdata::parse.taxa(names$GBIF[names$taxa %in% none_change$old])$genus
+names$type[names$taxa %in% none_change$old] <- none_change$type[match(names$taxa[names$taxa %in% none_change$old], none_change$old)] 
+```
+
+
 
 ## 2.3 Synonyms
 ```{r}
@@ -307,7 +440,8 @@ gbif_synonyms <- gbif_synonyms[! (gbif_synonyms$kingdom != "Plantae" | is.na(gbi
 
 # add columns to data
 synonyms <- data.frame(GBIF = character(nrow(gbif_synonyms)), genus = character(nrow(gbif_synonyms)), family = character(nrow(gbif_synonyms)), 
-                       kingdom =  character(nrow(gbif_synonyms)), level = character(nrow(gbif_synonyms)),stringsAsFactors = FALSE)
+                       kingdom =  character(nrow(gbif_synonyms)), level = character(nrow(gbif_synonyms)), 
+                       status= character(nrow(gbif_synonyms)),stringsAsFactors = FALSE)
 
 # run for all synonyms
 for(i in 1: nrow(gbif_synonyms)){
@@ -319,6 +453,7 @@ for(i in 1: nrow(gbif_synonyms)){
   synonyms$family[i] <- acc$data$family
   synonyms$level[i] <- acc$data$rank
   synonyms$kingdom[i] <- acc$data$kingdom
+  synonyms$status[i] <- acc$data$taxonomicStatus
 }
 
 # link with original name 
@@ -338,7 +473,16 @@ names$kingdom[is.na(names$kingdom)] <- synonyms$kingdom[match(names$taxa[is.na(n
 ```{r}
 # are there any observations remaining
 gbif_remaining <- gbif[!gbif$verbatim_name %in% names$taxa[!is.na(names$kingdom)],]
-nrow(gbif_remaining[!(gbif_remaining$kingdom  != "Plantae" | is.na(gbif_remaining$kingdom)),])
+
+# assign the fuzzy
+gbif_fuzzy <- gbif_remaining[!is.na(gbif_remaining$canonicalName),]
+
+# assign names 
+names$GBIF[is.na(names$GBIF)] <- gbif_fuzzy$canonicalName[match(names$taxa[is.na(names$GBIF)] , gbif_fuzzy$verbatim_name)] 
+names$genus[is.na(names$genus)] <- gbif_fuzzy$genus[match(names$taxa[is.na(names$genus)] , gbif_fuzzy$verbatim_name)] 
+names$family[is.na(names$family)] <- gbif_fuzzy$family[match(names$taxa[is.na(names$family)] , gbif_fuzzy$verbatim_name)] 
+names$type[is.na(names$type)] <- tolower(gbif_fuzzy$rank[match(names$taxa[is.na(names$type)] , gbif_fuzzy$verbatim_name)]) 
+names$kingdom[is.na(names$kingdom)] <- gbif_fuzzy$kingdom[match(names$taxa[is.na(names$kingdom)] , gbif_fuzzy$verbatim_name)] 
 
 # look at observations not yet present
 remaining <- names[is.na(names$kingdom),]
@@ -434,7 +578,7 @@ plants <- data.frame(
                   "Vaccinium angustifolium x Vaccinium corymbosum",
                   "Veronica longifolia + Veronica spicata x Veronica longifolia",  
                   "Viola reichenbachiana + Viola riviniana + Viola x bavarica",
-                  "Viola tricolor group"),
+                  "Viola tricolor"),
   genus = c(NA, NA, NA, NA, NA, NA, NA, "Crocus", "Fallopia", "Hyacinthoides", "Hypericum",
             "Hypericum","Mentha", "Mentha", "Populus", "Salix", "Salix", "Salix",
             NA, "Tilia", "Vaccinium", "Veronica", "Viola", "Viola"),
@@ -444,9 +588,9 @@ plants <- data.frame(
               "Lamiaceae","Lamiaceae","Salicaceae","Salicaceae","Salicaceae","Salicaceae","Asteraceae",
               "Malvaceae","Ericaceae","Plantaginaceae",
               "Violaceae","Violaceae"),
-  rank = c( "tribe","tribe","subfamily","subfamily","tribe","subfamily","tribe","species","species",
-            "species","species","species","species","species","species","species","species",
-            "species","tribe","species","species","species","species","species"),stringsAsFactors = FALSE)
+  rank = c( "tribe","tribe","subfamily","subfamily","tribe","subfamily","tribe","complex","complex",
+            "complex","complex","complex","complex","complex","complex","complex","hybrid",
+            "hybrid","tribe","complex","hybrid","complex","complex","species"),stringsAsFactors = FALSE)
 
 # add genus, family, species and type
 remaining$genus <- plants$genus[match(remaining$taxa, plants$original_name)]
@@ -469,6 +613,7 @@ names <- names[!is.na(names$taxa),]
 names <- names[!names$type =="phylum",]
 names <- names[!names$type =="class",]
 names <- names[!names$type =="kingdom",]
+names <- names[!is.na(names$`related species`),]
 names$type[names$type =="form"] <- "species"
 names[names$taxa =="Cymbalaria",c(5:7,9)] <- data.frame("Cymbalaria","Cymbalaria","Plantaginaceae","genus")
 
@@ -489,28 +634,24 @@ names$subspecies[names$type=="subspecies"] <- names$taxa[names$type=="subspecies
 # species names
 unique(names$type) 
 names$species <- NA
-names$species[names$type=="species"] <- names$taxa[names$type=="species"]
+names$species[names$type=="species"] <- names$GBIF[names$type=="species"]
 names$species[names$type=="subspecies"] <- sapply(strsplit(names$subspecies[!is.na(names$subspecies)], " "), 
                                                   function(z) paste(z[1:2], collapse = " "))
 names$species[names$type=="variety"] <- sapply(strsplit(names$taxa[names$type=="variety"], " "), 
                                                function(z) paste(z[1:2], collapse = " "))
-names$species[names$type=="species"] <- names$taxa[names$type=="species"]
+names$species[names$type=="complex"] <- names$GBIF[names$type=="complex"]
+names$species[names$type=="hybrid"] <- names$GBIF[names$type=="hybrid"]
 # check which types remain
 unique(names$type[is.na(names$species)])
 
 # genus names
 names$genus_gbif <- names$genus
 names$genus <- NA
-names$genus[names$type=="genus"] <- names$taxa[names$type=="genus"]
+names$genus[names$type=="genus"] <- names$genus_gbif[names$type=="genus"]
 names$genus[is.na(names$genus) & !is.na(names$species)] <-  
   sapply(strsplit(names$species[is.na(names$genus) & !is.na(names$species)], " "), 
          function(z) paste(z[1], collapse = " "))
-# also add for group and complexes
-names$genus[names$type=="complex"] <- sapply(strsplit(names$taxa[names$type=="complex"], " "), 
-                                             function(z) paste(z[1], collapse = " "))
-# also add for group and complexes
-names$genus[names$type=="hybrid"] <- sapply(strsplit(names$taxa[names$type=="hybrid"], " "), 
-                                             function(z) paste(z[1], collapse = " "))
+
 # check which types remain
 unique(names$type[is.na(names$genus)])
 ```
@@ -537,6 +678,23 @@ names[is.na(names$family),] <- missing_family
 ```
 
 
+```{r}
+# genus check some left
+genus_not_yet <- names[is.na(names$genus) ,]
+# change some
+genus_not_yet$genus[genus_not_yet$taxa %in% "Taraxacum"] <- "Taraxacum"
+genus_not_yet$type[genus_not_yet$taxa %in% "Taraxacum"] <- "genus"
+# Cardaminopsis
+genus_not_yet$genus[genus_not_yet$taxa %in% "Cardaminopsis"] <- "Arabis"
+genus_not_yet$type[genus_not_yet$taxa %in% "Cardaminopsis"] <- "genus"
+# Cnicus
+genus_not_yet$genus[genus_not_yet$taxa %in% "Cnicus"] <- "Centaurea"
+genus_not_yet$type[genus_not_yet$taxa %in% "Cnicus"] <- "genus"
+
+names[is.na(names$genus) ,] <- genus_not_yet
+```
+
+
 ## 3 SAVE
 ```{r}
 # look at numbers
@@ -547,6 +705,14 @@ write_csv(names, "../Data/Names/Names_plants_observation.csv")
 
 # assign to obs
 obs$plant <- names$taxa[match(obs$`related species`, names$`related species`)]
+obs$obs_subspecies <- names$subspecies[match(obs$`related species`, names$`related species`)]
+obs$obs_species <- names$species[match(obs$`related species`, names$`related species`)]
+obs$obs_genus <- names$genus[match(obs$`related species`, names$`related species`)]
+obs$obs_family <- names$family[match(obs$`related species`, names$`related species`)]
+obs$obs_rank <- names$type[match(obs$`related species`, names$`related species`)]
+
+obs <- obs |> relocate(plant, .before= obs_species)
+obs <- obs |> relocate(obs_subspecies, .before= obs_species)
 
 write_csv(obs, "../Data/Observation/observation_org_bees.csv")
 ```

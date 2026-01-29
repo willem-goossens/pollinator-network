@@ -17,7 +17,6 @@ rm(list=ls())
 
 ```{r}
 library(tidyverse)
-library(sf)
 library(duckdb)
 library(sf)
 library(sp)

@@ -42,6 +42,8 @@ pol_plantnet <- pol_plantnet |> select(ID, Score, Name, Genus, Family, GBIF_ID, 
 # link subspecies
 pol_plantnet$obs_subspecies <- names$subspecies[match(pol_plantnet$Name ,names$subspecies)]
 
+
+
 # link species
 pol_plantnet$obs_species <- names$species[match(pol_plantnet$Name ,names$species)]
 pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$taxa)]
@@ -52,6 +54,8 @@ names_subset <- names[!is.na(names$subspecies),]
 pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- 
   names_subset$species[match(pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_species)], names_subset$subspecies)]
 
+
+
 # link genus
 pol_plantnet$obs_genus <- names$genus[match(pol_plantnet$Name ,names$genus)]
 # subset data
@@ -60,6 +64,8 @@ names_subset <- names[!is.na(names$species),]
 pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- 
   names_subset$genus[match(pol_plantnet$obs_species[is.na(pol_plantnet$obs_genus)], names_subset$species)]
 
+
+
 # link family
 pol_plantnet$obs_family <- names$family[match(pol_plantnet$Name ,names$family)]
 # subset data
@@ -67,6 +73,8 @@ names_subset <- names[!is.na(names$genus),]
 # add genus
 pol_plantnet$obs_family[is.na(pol_plantnet$obs_family)] <- 
   names_subset$family[match(pol_plantnet$obs_genus[is.na(pol_plantnet$obs_family)], names_subset$genus)]
+
+
 
 # check lengths
 sum(!is.na(pol_plantnet$obs_subspecies))
@@ -93,7 +101,6 @@ sum(!is.na(pol_plantnet$rank))
 # there are some genera not correct
 check_genera <- pol_plantnet[!duplicated(pol_plantnet$obs_genus) & !is.na(pol_plantnet$obs_genus),]
 check_genera <- check_genera[!is.na(vegdata::parse.taxa(check_genera$obs_genus)$epi1),]
-check_genera$obs_genus <- vegdata::parse.taxa(check_genera$obs_genus)$genus
 
 # change in pol_plantnet
 pol_plantnet$obs_genus[pol_plantnet$Name %in% check_genera$Name] <- 
@@ -237,7 +244,8 @@ pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- names$GBIF_genus[match(
 pol_plantnet$obs_family[is.na(pol_plantnet$obs_family)] <- names$GBIF_family[match(pol_plantnet$Name[is.na(pol_plantnet$obs_family)], names$Name)]
 pol_plantnet$rank[is.na(pol_plantnet$rank)] <- tolower(names$GBIF_rank[match(pol_plantnet$Name[is.na(pol_plantnet$rank)], names$Name)])
 
-pol_plantnet$
+# check how many
+pol_plantnet |> group_by(rank) |> summarise(n= n())
 ```
 
 
@@ -245,11 +253,11 @@ pol_plantnet$
 ## 3.1 Pollination
 ```{r}
 # assign subspecies
-pol$obs_subspecies[!is.na(pol$plant)] <- names_obs$subspecies[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
-pol$obs_species[!is.na(pol$plant)] <- names_obs$species[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
-pol$obs_genus[!is.na(pol$plant)] <- names_obs$genus[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
-pol$obs_family[!is.na(pol$plant)] <- names_obs$family[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
-pol$obs_rank[!is.na(pol$plant)] <- names_obs$type[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+#pol$obs_subspecies[!is.na(pol$plant)] <- names_obs$subspecies[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+#pol$obs_species[!is.na(pol$plant)] <- names_obs$species[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+#pol$obs_genus[!is.na(pol$plant)] <- names_obs$genus[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+#pol$obs_family[!is.na(pol$plant)] <- names_obs$family[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
+#pol$obs_rank[!is.na(pol$plant)] <- names_obs$type[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
 
 # plantnet data
 pol$plantnet_subspecies <- pol_plantnet$obs_subspecies[match(pol$id, pol_plantnet$ID)]
@@ -258,6 +266,7 @@ pol$plantnet_genus <- pol_plantnet$obs_genus[match(pol$id, pol_plantnet$ID)]
 pol$plantnet_family <- pol_plantnet$obs_family[match(pol$id, pol_plantnet$ID)]
 pol$plantnet_rank <-  pol_plantnet$rank[match(pol$id, pol_plantnet$ID)]
 pol$plantnet_score <-  pol_plantnet$Score[match(pol$id, pol_plantnet$ID)]
+pol$plantnet_organ <- pol_plantnet$Organ[match(pol$id, pol_plantnet$ID)]
 ```
 
 
@@ -336,7 +345,7 @@ validation_improved <- validation[is.na(validation$obs_species) & validation$obs
 ## 3.3 Data
 ```{r}
 # get all relevant data
-interactions <- pol[!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=70 ),]
+interactions <- pol[(!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=70 ) ) & pol$plantnet_organ == "flower",]
 
 # assign species
 interactions$plant_taxa <- interactions$obs_species
@@ -351,11 +360,17 @@ interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$obs_fami
 interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_family[is.na(interactions$plant_taxa)] 
 interactions$plant_rank_final[!is.na(interactions$plant_taxa) & is.na(interactions$plant_rank_final)] <- "Family"
 
+# save this dataset
+write_csv(interactions, "../Results/Interaction_dataset.csv")
+```
+
+
+```{r}
 # reduce final dataset
 interactions <- interactions |> select(id, date, time, lat, lng, country, name, family, plant_taxa, plant_rank_final)
 interactions <- interactions |> mutate(time_period = cut(as.Date(date), breaks = as.Date(c("1995-01-01","2005-01-01","2015-01-01","2025-12-31")),
                                                          include.lowest = TRUE))
-                                                        
+
 ```
 
 
@@ -372,8 +387,6 @@ for(i in 1: nrow(threshold)){
 # look at data over time
 plot_data <- network_interaction |> group_by(time_period) |> summarise(n= n())
 ```
-
-
 
 
 
