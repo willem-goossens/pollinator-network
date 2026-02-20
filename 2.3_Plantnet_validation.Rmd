@@ -37,22 +37,30 @@ names_obs <- names
 ## 2.1 Dataset
 ```{r}
 # get smaller dataframe
-pol_plantnet <- pol_plantnet |> select(ID, Score, Name, Genus, Family, GBIF_ID, POWO_ID, IUCN_ID, Organ)
+pol_plantnet <- pol_plantnet |> dplyr::select(ID, Score, Name, Genus, Family, GBIF_ID, POWO_ID, IUCN_ID, Organ)
 
 # link subspecies
 pol_plantnet$obs_subspecies <- names$subspecies[match(pol_plantnet$Name ,names$subspecies)]
-
+pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_subspecies)] <-
+  names$subspecies[match(pol_plantnet$Name[is.na(pol_plantnet$obs_subspecies)],
+                         gsub("subsp. ", "", names$subspecies))]
+pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_subspecies)] <-
+  names$subspecies[match(pol_plantnet$Name[is.na(pol_plantnet$obs_subspecies)],
+                         gsub("var. ", "", names$subspecies))]
 
 
 # link species
 pol_plantnet$obs_species <- names$species[match(pol_plantnet$Name ,names$species)]
-pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$taxa)]
-pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$GBIF)]
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <-
+  names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$taxa)]
+pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <-
+  names$species[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)] ,names$GBIF)]
 # subset data
 names_subset <- names[!is.na(names$subspecies),]
 # add subspecies
 pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- 
-  names_subset$species[match(pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_species)], names_subset$subspecies)]
+  names_subset$species[match(pol_plantnet$obs_subspecies[is.na(pol_plantnet$obs_species)],
+                             names_subset$subspecies)]
 
 
 
@@ -203,25 +211,25 @@ genus_dataframe <- data.frame(old = c("Taraxacum sect. Taraxacum", "Pinus",
                                       "Oreomecon olchonensis","Troncosoa seriphioides",
                                       "Gyrophyllum tripteris","Gyrophyllum major", "Dahlia",
                                       "Bougainvillea","Phalaenopsis","Valeriana orientalis",
-                                      "Mutarda carinata"),
+                                      "Mutarda carinata", "Genista etnensis", "Echinopsis","Oreomecon lapponica"),
                               species = c(NA, NA, "Sinapis arvensis","Anacis palmata", NA, NA,
                                           "Oreomecon crocea","Anacis verticillata",
                                           "Oreomecon olchonensis","Troncosoa seriphioides",
                                           "Anacis tripteris","Anacis major", NA, NA, NA,
-                                          "Valeriana orientalis", "Brassica carinata"),
+                                          "Valeriana orientalis", "Brassica carinata", "Genista etnensis","Echinopsis", "Oreomecon lapponica"),
                               genus= c("Taraxacum", "Pinus", "Sinapis", "Anacis", "Salix", "Viola",
                                        "Oreomecon","Anacis", "Oreomecon","Troncosoa","Anacis",
                                        "Anacis", "Dahlia","Bougainvillea", "Phalaenopsis",
-                                       "Valeriana","Brassica"),
+                                       "Valeriana","Brassica", "Genista","Echinopsis", "Oreomecon"),
                               family = c("Asteraceae", "Pinaceae","Brassicaceae", "Asteraceae",
                                          "Salicaceae","Violaceae", "Papaveraceae","Asteraceae",
                                          "Papaveraceae","Verbenaceae","Asteraceae","Asteraceae",
                                          "Asteraceae", "Nyctaginaceae","Orchidaceae",
-                                         "Caprifoliaceae","Brassicaceae"),
+                                         "Caprifoliaceae","Brassicaceae", "Fabaceae","Cactaceae", "Papaveraceae"),
                               rank = c("COMPLEX", "GENUS", "SPECIES", "SPECIES", "GENUS",
                                        "GENUS", "SPECIES","SPECIES","SPECIES", "SPECIES",
                                        "SPECIES","SPECIES", "GENUS", "GENUS", "GENUS", 
-                                       "SPECIES", "SPECIES"))
+                                       "SPECIES", "SPECIES", "SPECIES", "GENUS", "SPECIES"))
 
 # assign
 lacking_names_gbif$GBIF <- genus_dataframe$species[match(lacking_names_gbif$names, genus_dataframe$old)]
@@ -232,12 +240,14 @@ lacking_names_gbif$GBIF_kingdom <- "PLANTAE"
 
 # assign
 names[is.na(names$GBIF_genus),] <- lacking_names_gbif
-#write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
+write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
 ```
 
 
 ## 2.3 Assign
 ```{r}
+names <- read_csv("../Data/Names/Names_plants_plantnet.csv")
+
 # assign names
 pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$GBIF[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)], names$Name)]
 pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- names$GBIF_genus[match(pol_plantnet$Name[is.na(pol_plantnet$obs_genus)], names$Name)]
@@ -327,7 +337,7 @@ ggplot(data = score_levels, aes(x= type, y= score, group= score_levels, fill= fa
   theme(legend.position="right", legend.box = "vertical", legend.title.position = "top")+
   theme(legend.title = element_text(hjust = 0.5))+
   xlab(NULL)+
-  ylab("Pl@ntNet Reliability Score")+ 
+  ylab("Percentage of aggreement")+ 
   guides(fill = guide_legend(ncol = 1))
 ```
 
@@ -345,11 +355,16 @@ validation_improved <- validation[is.na(validation$obs_species) & validation$obs
 ## 3.3 Data
 ```{r}
 # get all relevant data
-interactions <- pol[(!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=70 ) ) & pol$plantnet_organ == "flower",]
+# check how many with plantnet identification are according to the rules
+sum(!is.na(pol$plantnet_rank) & pol$plantnet_score>=0.60)
+
+# relevant
+interactions <- pol[(!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=0.60 ) & pol$plantnet_organ == "flower"),]
 
 # assign species
 interactions$plant_taxa <- interactions$obs_species
-interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_species[is.na(interactions$plant_taxa)] 
+interactions$plant_taxa[is.na(interactions$plant_taxa)] <-
+  interactions$plantnet_species[is.na(interactions$plant_taxa)] 
 interactions$plant_rank_final[!is.na(interactions$plant_taxa)] <- "Species"
 # remaining can be genera
 interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$obs_genus[is.na(interactions$plant_taxa)] 
@@ -364,28 +379,31 @@ interactions$plant_rank_final[!is.na(interactions$plant_taxa) & is.na(interactio
 write_csv(interactions, "../Results/Interaction_dataset.csv")
 ```
 
-
+Look at time
 ```{r}
 # reduce final dataset
-interactions <- interactions |> select(id, date, time, lat, lng, country, name, family, plant_taxa, plant_rank_final)
-interactions <- interactions |> mutate(time_period = cut(as.Date(date), breaks = as.Date(c("1995-01-01","2005-01-01","2015-01-01","2025-12-31")),
-                                                         include.lowest = TRUE))
+interactions$date <- as.Date(interactions$date, format= c("%Y/%m/%d"))
 
+interactions <- interactions |> 
+  mutate(time_period = cut(as.Date(date),
+         breaks = as.Date(c("1995-01-01","2010-01-01" ,"2025-12-31")), right =F))
 ```
 
 
+Look at number of interactions
 ```{r}
 # create network
-network_interaction <- interactions |>  group_by(name, plant_taxa, time_period) |> summarize(total_interactions = n(), .groups = 'drop')
+network_interaction <- interactions |>  group_by(name, plant_taxa) |> summarize(total_interactions = n(), .groups = 'drop')
 
 # look at number of interactions taken into account
 threshold <- data.frame(level = c(1,2,3,4,5,10))
 for(i in 1: nrow(threshold)){
-  threshold$n[i] <- nrow(network_interaction[network_interaction$total_interactions >= threshold$level[i],])
+  threshold$n_interactions[i] <- nrow(network_interaction[network_interaction$total_interactions >= threshold$level[i],])
+  threshold$n_observations[i] <- nrow(interactions |>   group_by(name, plant_taxa) |>  filter(n() >= threshold$level[i]) |>  ungroup())
 }
 
-# look at data over time
-plot_data <- network_interaction |> group_by(time_period) |> summarise(n= n())
+# get those with at least 5 interactions
+network_threshold <- interactions |>   group_by(name, plant_taxa) |>  filter(n() >= 2) |>  ungroup()
 ```
 
 

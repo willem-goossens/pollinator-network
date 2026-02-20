@@ -11,6 +11,12 @@ Load
 ```{r}
 library(tidyverse)
 library(bipartite)
+library(ggridges)
+library(multcomp)
+library(lme4)
+library(lmerTest)
+library(DHARMa)
+library(emmeans)
 ```
 
 Remove all available data
@@ -20,25 +26,159 @@ rm(list=ls())
 
 Load in data
 ```{r}
-polplant <- read_csv("../Data/polplant.csv")
-fast=F
+# load data
+interactions <- read_csv("../Results/Interaction_final.csv", show_col_types = FALSE)
+
+# subdivide data 
+fast =T
 if(fast){
-  polplant <- polplant[runif(nrow(polplant)) >0.99,]
+  interactions <- interactions[runif(nrow(interactions)) > 0.90,]
 }
 
+# get genus and family data
+interactions$obs_genus[is.na(interactions$obs_genus)] <- interactions$plantnet_genus[is.na(interactions$obs_genus)] 
+interactions$obs_family[is.na(interactions$obs_family)] <- interactions$plantnet_family[is.na(interactions$obs_family)] 
+# get specific data only
+interactions <- interactions |> 
+  dplyr::select(id, eco_region, date, name, plant_taxa, euromed_region, plant_rank_final, obs_genus, obs_family, pol_genus, pol_family, pol_rank)
+interactions |> group_by(eco_region) |> summarise(n=n())
+
+# only keep species level observations for now
+interactions <- interactions[interactions$plant_rank_final=="Species" & interactions$pol_rank== "Species",]
+
 # create interaction matrix
-interaction_matrix <- polplant |>dplyr::count(powo, gbif) |> tidyr::pivot_wider(names_from = gbif,values_from = n,values_fill = list(n = 0))
+interaction_matrix <- interactions |> dplyr::count(name, plant_taxa, eco_region) |> tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
 interaction_matrix <- as.data.frame(interaction_matrix)
-rownames(interaction_matrix) <- interaction_matrix$powo
-interaction_matrix <- interaction_matrix[, -1]
+```
+
+
+```{r}
+# create databases per network
+ecoregions <- as.data.frame(unique(interaction_matrix$eco_region))
+colnames(ecoregions) <- "name"
+ecoregions$abbreviation <- c("West", "Turk", "Med","Atl","Cent","Sp","Sarm","Balt","Temp_B","Alp","Bor","Tun","Temp_C")
+interaction_matrix$eco_region <- ecoregions$abbreviation[match(interaction_matrix$eco_region, ecoregions$name)]
+```
+
+
+```{r}
+# subdivide interaction matrices
+interaction_matrices <- list()
+for(i in ecoregions$abbreviation){
+  p <- interaction_matrix[interaction_matrix$eco_region == i, , drop = FALSE]
+  rownames(p) <- p$plant_taxa
+  p <- p[, -c(1:2), drop = FALSE]
+  p <- p[, colSums(p) > 0, drop = FALSE]
+  interaction_matrices[[i]] <- p
+}
+```
+
+# 2 Species
+## 2.1 Metrics
+```{r}
+# get species level networks
+species_degree_df <- lapply(names(interaction_matrices), function(i){
+
+  mat <- interaction_matrices[[i]]
+  mat <- as.matrix(mat)
+  mode(mat) <- "numeric"
+  nL <- nrow(mat)
+  nH <- ncol(mat)
+
+  deg <- specieslevel(mat,"degree")
+  ND <- specieslevel(mat,"normalised degree")
+  strg <- specieslevel(mat,"species strength")
+
+  if(nL>=2 && nH>=2){
+    NSI <- specieslevel(mat,"NSI")
+    BC <- specieslevel(mat,"betweenness")
+    NSI_H <- NSI$`higher level`
+    NSI_L <- NSI$`lower level`
+    BC_H <- BC$`higher level`$betweenness
+    BC_L <- BC$`lower level`$betweenness
+    n_contr <- nestedcontribution(mat, nsimul = 99)
+    n_contr_L <- n_contr$`lower level`
+    n_contr_H <- n_contr$`higher level`
+  } else {
+    NSI_H <- rep(NA,nH)
+    NSI_L <- rep(NA,nL)
+    BC_H <- rep(NA,nH)
+    BC_L <- rep(NA,nL)
+    n_contr_L <- rep(NA,nH)
+    n_contr_H <- rep(NA,nH)
+  }
+  
+  bind_rows(
+    data.frame(species=colnames(mat), n=nH,degree=deg$`higher level`,ND=ND$`higher level`, strength=strg$`higher level`, NSI=NSI_H, BC=BC_H, 
+               n_contr_H = n_contr_H,trophic_level="pollinator", ecoregion=i),
+    data.frame(species=rownames(mat), n=nL, degree=deg$`lower level`,ND=ND$`lower level`, strength=strg$`lower level`, NSI=NSI_L, BC=BC_L,
+               n_contr_L = n_contr_L, trophic_level="plant", ecoregion=i))
+}) |> bind_rows()
+
+rownames(species_degree_df) <- 1: nrow(species_degree_df)
+species_degree_df <- species_degree_df[, -10]
+species_degree_df$node.specialisation.index.NSI[species_degree_df$node.specialisation.index.NSI=="NaN"] <- NA
+```
+
+
+```{r}
+# assign family and genus levels
+species_degree_df$genus <- interactions$obs_genus[match(species_degree_df$species, interactions$plant_taxa)]
+species_degree_df$family <- interactions$obs_family[match(species_degree_df$species, interactions$plant_taxa)]
+species_degree_df$genus[is.na(species_degree_df$genus)] <- interactions$pol_genus[match(species_degree_df$species[is.na(species_degree_df$genus)], interactions$name)]
+species_degree_df$family[is.na(species_degree_df$family)] <- interactions$pol_family[match(species_degree_df$species[is.na(species_degree_df$family)], interactions$name)]
+```
+
+
+## 2.2 Plot
+```{r}
+# we will remove the datasets with too little data
+species_degree_df <- species_degree_df[species_degree_df$n > 10,]
+
+# plot plant and pollinator degrees
+ggplot(species_degree_df, aes(x=trophic_level, y=PSI, fill=trophic_level)) + 
+    geom_boxplot() +
+    facet_wrap(~ecoregion, scale="free")
+
+# plot normalised degree for plants
+ggplot(species_degree_df[species_degree_df$trophic_level== "plant",], aes(x=node.specialisation.index.NSI, y= ecoregion, fill = ecoregion)) + 
+  geom_density_ridges() +
+  theme_ridges() + 
+  theme(legend.position = "none")
+```
+
+
+## 2.3 Significance
+```{r}
+# are the differences among groups significant
+sign_ecoregion_pol <- glmer(node.specialisation.index.NSI ~ ecoregion + (1|family/genus ), species_degree_df[species_degree_df$trophic_level=="plant",], family = gaussian(link = "identity"))
+summary(sign_ecoregion_pol)
+plot(simulateResiduals(sign_ecoregion_pol))
+
+# check significance
+emm <- emmeans(sign_ecoregion_pol, pairwise ~ecoregion)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+cld_results
+```
+
+# 3 Network
+```{r}
+
+```
+
+
+# 4 Module
+```{r}
+mod <- computeModules(interaction_matrices[[2]])
+plotModuleWeb(mod)
 ```
 
 
 # 2 Network indices
 Which chose?
 - connectance (depend on specialisation but also sampling intensity)
-- degree also 
-- weighted vs binary (use less information, but not necessarily more robust, but more affected by sampling bias)
+
 
 Table
 - connectance
@@ -51,24 +191,19 @@ Network level
 ```{r}
 # COMPARTMENTS
 # compartments are sub sets not connected to another one
-comp_number<- networklevel(interaction_matrix, index= "number of compartments")
 # visualise using visweb
-# visweb(interaction_matrix)
-# shannon diversity of compartment sizes
-#comp_div<- networklevel(interaction_matrix, index= "compartment diversity")
+# visweb(interaction_matrix_Atl)
+
 
 # NESTEDNESS
 # 0 highly nested, 1 pure chaos
-nestedness<- networklevel(interaction_matrix, index= "nestedness")
+nestedness<- networklevel(interaction_matrix_Atl, index= "nestedness")
 # for null models, use nested
-null_model <- nested(interaction_matrix)
+null_model <- nested(interaction_matrix_Atl)
 # higher values more nested here
 #nestedness_NODF <- networklevel(interaction_matrix, index= "NODF")
 # interaction frequencies accounted for (0 chaos to 1 nested)
-#nestedness_weighted<- networklevel(interaction_matrix, index= "weighted nestedness")
-# weighted NODF (but takes long to calculate)
-#nestedness_NODF_weighted<- networklevel(interaction_matrix, index= "weighted NODF")
-# other options are spectral radius
+
 
 # SPECIALISATION AND DIVERSITY
 # dependence assymetry --> specialisation 
@@ -112,25 +247,15 @@ robustness <- networklevel(interaction_matrix, index= "robustness")
 niche_overlap<- networklevel(interaction_matrix, index= "niche overlap")
 ```
 
-Species level
-```{r}
-# number of links per species
-degree <- specieslevel(interaction_matrix, "degree")
-# sum of dependencies
-strength <-  specieslevel(interaction_matrix, "species strength")
-
-# multiple of lower trophic 
-specieslevel(interaction_matrix, level="lower", index=c("normalised degree", "PDI", "effective partners"), PDI.normalise=F)
-```
 
 
 
 Modules
 ```{r}
-mod <- computeModules(interaction_matrix)
-plotModuleWeb(mod)
-png("../Images/module_web_plot.pdf")
+mod <- computeModules(interaction_matrices[[2]])
 png("module_web_plot.png", width = 1000, height = 800, res = 150)
+
+plotModuleWeb(mod)
 
 ```
 

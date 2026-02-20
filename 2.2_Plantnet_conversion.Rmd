@@ -57,6 +57,8 @@ setwd(wd)
 Merge data
 ```{r}
 list <- merge(results_list_one, results_list_third)
+# how many are left
+length(obs$id[!obs$id %in% names(list)])
 ```
 
 Extract data
@@ -87,7 +89,7 @@ id_pol <- id_pol[!id_pol %in% pol_plantnet$ID]
 # define stable output schema once
 plant_schema <- c("ID", "Score", "Name", "Common_name", "Name_author", "Genus", "Genus_author", "Family", "Family_author", "GBIF_ID", "POWO_ID",
                   "IUCN_ID", "IUCN")
-
+id <- id_pol[20000]
 for (id in id_pol) {
 
   predicted <- list[[as.character(id)]]
@@ -110,7 +112,7 @@ for (id in id_pol) {
       IUCN_ID = if ("iucn.id" %in% names(cur_data())) .data[["iucn.id"]] else NA,
       IUCN    = if ("iucn.category" %in% names(cur_data())) .data[["iucn.category"]] else NA
     ) %>%
-    select(any_of(plant_schema))
+    dplyr::select(any_of(plant_schema))
 
   # enforce missing columns explicitly
   missing_cols <- setdiff(plant_schema, colnames(predicted_plant))
@@ -203,10 +205,12 @@ for (id in id_pol) {
 }
 
 write_csv(pol_plantnet, "../Results/Plantnet_identification.csv")
-
 ```
 
 
+```{r}
+
+```
 
 
 

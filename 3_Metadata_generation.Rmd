@@ -18,6 +18,9 @@ Load packages
 library(tidyverse)
 library(sf)
 library(sp)
+library(terra)
+library(ggpubr)
+library(cowplot)
 ```
 
 Load interactions
@@ -30,7 +33,7 @@ interactions <- read_csv("../Results/Interaction_dataset.csv", show_col_types = 
 Assign country Euro + MED
 ```{r}
 # reduce dataset
-coord <- interactions |> select("id", "country","lat", "lng")
+coord <- interactions |> dplyr::select("id", "country","lat", "lng")
 colnames(coord)[2] <- "observation_country"
 
 # make geometrical dataset
@@ -139,10 +142,10 @@ interactions$euromed_region <- joinedData$country[match(interactions$id, joinedD
 ```
 
 
-## 2.3 Ecoregions
+## 1.3 Ecoregions
 ```{r}
 # reduce dataset
-coord <- interactions |> select("id", "country","lat", "lng")
+coord <- interactions |> dplyr::select("id", "country","lat", "lng")
 colnames(coord)[2] <- "observation_country"
 
 # make geometrical dataset
@@ -188,5 +191,305 @@ region_names <- joinedData |> group_by(region) |> summarise(n = n())
 interactions$eco_region <- joinedData$region[match(interactions$id, joinedData$id)]
 interactions$eco_name <- joinedData$ECO_NAME[match(interactions$id, joinedData$id)]
 interactions$eco_biome <- joinedData$BIOME_NAME[match(interactions$id, joinedData$id)]
+```
+
+```{r}
+# create network
+network_interaction <- interactions |>  group_by(name, plant_taxa, eco_region) |> summarize(total_interactions = n(), .groups = 'drop')
+
+# look at number of interactions taken into account
+threshold <- data.frame(level = c(1,2,3,4,5,10))
+for(i in 1: nrow(threshold)){
+  threshold$n_interactions[i] <- nrow(network_interaction[network_interaction$total_interactions >= threshold$level[i],])
+  threshold$n_observations[i] <- nrow(interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= threshold$level[i]) |>  ungroup())
+}
+
+# get those with at least 5 interactions
+interactions <- interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= 5) |>  ungroup()
+```
+
+
+
+## 1.4 HFP
+```{r}
+# load Human Foot Print data and check crs
+hfp2009<- rast("~/Doctoraat/Impact/Extra data/DIV/HFP2009.tif")
+hfp1993<- rast("~/Doctoraat/Impact/Extra data/DIV/HFP1993.tif")
+
+# reduce dataset
+coord <- interactions |> select("id", "country","lat", "lng")
+colnames(coord)[2] <- "observation_country"
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+
+# crop to regions
+sf_use_s2(F)
+hfp2009 <- st_crop(hfp2009, europe_polygon)
+hfp2009 <- st_crop(hfp2009, medRegions, crop=F)
+hfp1993 <- st_crop(hfp1993, europe_polygon)
+hfp1993 <- st_crop(hfp1993, medRegions, crop=F)
+sf_use_s2(T)
+
+# assign 
+joinedData <- st_join(coord, eco, join = st_nearest_feature)
+```
+
+
+# 2 MAP
+## 2.1 Prepare
+```{r}
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(marmap) 
+library(ggnewscale)
+
+# Load world map and bathymetry data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Define Europe bounding box
+map_bbox <- c(-24.53266, 60, 34.8015, 72)  
+# Download bathymetry data
+bathy_data <- getNOAA.bathy(
+  lon1 = map_bbox[1], lon2 = map_bbox[2],
+  lat1 = map_bbox[3], lat2 = map_bbox[4],
+  resolution = 5
+)
+
+
+# Convert bathymetry to raster
+bathy_raster <- marmap::as.raster(bathy_data)
+bathy_df <- as.data.frame(as(bathy_raster, "SpatialPixelsDataFrame"))
+colnames(bathy_df) <- c("elevation", "x", "y")
+
+
+# Read and transform observation points
+coord <-coord <- st_as_sf(coord, coords = c("lng","lat"), remove = FALSE) %>%
+  st_set_crs(4326) %>%
+  st_transform(4326)
+
+# Create a grid over Europe
+grid <- st_make_grid(medRegions, cellsize = 0.5, square = TRUE) %>% st_sf()
+```
+
+
+```{r}
+# add relevant ecoregions
+eco <- eco  %>% st_set_crs(4326) %>% st_transform(4326)
+
+# look at which in interactions
+unique(interactions$eco_region)
+
+# we will keep only these
+eco_final <- eco[eco$ECO_NAME %in% interactions$eco_region,]
+eco_final <- eco_final |> select("ECO_NAME","COLOR","geometry")
+colnames(eco_final) <- c("Name","Color","geometry")
+eco_final$level <- "Ecoregion"
+
+# these to biome level
+eco_biome_level <- eco[eco$BIOME_NAME %in% interactions$eco_region & 
+                         !(eco$ECO_NAME %in% eco_final$Name),]
+eco_biome_level <- eco_biome_level |> group_by(BIOME_NAME, COLOR_BIO) |> 
+  summarise(geometry = st_union(geometry) , .groups = "drop")
+colnames(eco_biome_level) <- c("Name","Color","geometry")
+eco_biome_level$level <- "Biome"
+
+# merge
+eco_final <- bind_rows(eco_final, eco_biome_level)
+eco_final <- eco_final[order(eco_final$Name),]
+
+
+# add numbers to eco_final
+eco_final$n <- table(interactions$eco_region)
+```
+
+
+```{r}
+# Count points per grid cell
+coord$obs <- 1
+grid_counts <- st_join(grid, coord, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarise(n = sum(obs, na.rm = TRUE))  # NA if no points
+
+grid_counts$n[grid_counts$n=="0"] <- NA
+grid_counts$obs_cat <- ifelse(is.na(grid_counts$n), "No data", "Data")
+grid_counts$log_n <- log10(grid_counts$n)
+
+grid_counts <- as.data.frame(st_coordinates(st_centroid(grid_counts))) %>%
+  mutate(n = grid_counts$n)
+
+breaks <- 10 ^ seq(floor(log10(min(grid_counts$n[grid_counts$n > 0], na.rm =T))),
+  ceiling(log10(max(grid_counts$n, na.rm =T))), length.out = 8)
+
+breaks <- round(breaks, digits=0)
+```
+
+## 2.2 Map 
+```{r}
+ggplot() +
+ geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),
+    name = "Depth (m)",       # Legend title (hidden in theme below)
+    limits = c(-6000, 0),     # Adjust limits for ocean depths
+    na.value = "aliceblue",   # Color for land areas
+    guide = "none"            # Remove the legend for ocean depth
+  ) +
+  new_scale_fill() +
+  geom_sf(data = world, fill = NA, color = "grey", size = 0.2, alpha=0.2) +
+  # Add country borders
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey", size = 0.2, alpha= 0.5) +
+  # Plot occurrences
+  geom_raster(data = grid_counts, aes(X, Y, fill = n), alpha= 0.8) +
+  scale_fill_viridis_c(option = "inferno", trans= "log", na.value = "NA", direction= 1, 
+                       breaks = breaks, labels = scales::label_number(big.mark = ","))+
+  #scale_fill_viridis_d(option = "inferno", na.value = NA) +
+  # Add country borders
+  geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)+
+  # Define the map extent using the bounding box
+  coord_sf(xlim = c(map_bbox[1], map_bbox[2]), 
+           ylim = c(map_bbox[3], map_bbox[4]), 
+           expand = FALSE) +
+  theme_minimal()+
+  # Customize the theme
+  theme(
+    panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", size = 0.5),
+    panel.background = element_rect(fill = "white", color = NA), 
+    axis.text = element_text(size = 12, color = "black"),
+    axis.ticks = element_line(color = "black"),
+    plot.title = element_blank(),  # Remove map title
+    plot.margin = margin(5, 5, 5, 5))+
+  theme(
+    legend.position = c(1, 0.01),  # Bottom-left corner
+    legend.justification = c(1, 0),  # Anchor the legend box at its bottom-left
+    legend.background = element_rect(fill = "aliceblue", color = "aliceblue"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 8),
+    legend.key.height = unit(0.6, "cm"),
+    legend.key.width = unit(0.6, "cm"),
+    legend.margin = margin(0.5, 0.0, 0.0, 0.0, "cm"))+
+  labs(fill = "Number of\nobservations",
+       x = "Longitude",
+       y = "Latitude")
+
+ggsave("../Images/map_observations.png", width= 8, height= 6)
+```
+
+
+## 2.3 Map Eco
+```{r}
+# Discrete colors for ecoregions/biomes
+eco_colors <- setNames(eco_final$Color, paste(eco_final$Name, "(n =", eco_final$n, ")", sep= " "))
+eco_final$Name <- paste(eco_final$Name, "(n =", eco_final$n, ")", sep= " ")
+
+# Breaks for counts
+breaks <- c(0, 1, 10, 30, 100, 300, 1000, 3000, 10000)
+
+ecoregions <- ggplot() +
+  # Bathymetry
+  geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),
+    limits = c(-6000, 0),
+    na.value = "aliceblue",
+    guide = "none"
+  ) +
+  new_scale_fill() +
+  # Countries
+  geom_sf(data = world, fill = NA, color = "grey60", size = 0.2, alpha = 0.3) +
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey60", size = 0.2, alpha = 0.5) +
+    
+  # Ecoregions / Biomes (discrete)
+  geom_sf(data = eco_final, aes(fill = Name), color = "grey50", size = 0.3, alpha = 0.6) +
+  scale_fill_manual(
+    values = eco_colors,
+    name = "Ecoregion / Biome" )
+
+ecoregions_legend <- get_legend(ecoregions)
+
+p <- ggplot() +
+  # SEA
+  geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),limits = c(-6000, 0),
+    na.value = "aliceblue", guide = "none") +
+  # COUNTRY
+  new_scale_fill() +
+  geom_sf(data = world, fill = NA, color = "grey60", size = 0.2, alpha = 0.3) +
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey60", size = 0.2, alpha = 0.5) +
+  # ECOREGION
+  geom_sf(data = eco_final, aes(fill = Name), size = 0.3, alpha = 0.6,show.legend= F) +
+  scale_fill_manual(values = eco_colors, name = "Ecoregion / Biome") +
+  # RASTER
+  new_scale_fill() +
+  geom_raster(data = grid_counts, aes(X, Y, fill = n), alpha = 0.8) +
+  scale_fill_viridis_c(option = "inferno", trans= "log", na.value = "NA", direction= 1, 
+                       breaks = breaks, labels = scales::label_number(big.mark = ","))+
+  # EXTENT
+  coord_sf(xlim = c(map_bbox[1], map_bbox[2]), ylim = c(map_bbox[3], map_bbox[4]), expand = FALSE) +
+  # THEME
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", size = 0.5),
+    panel.background = element_rect(fill = "white", color = NA), # Keep a neutral background
+    axis.text = element_text(size = 12, color = "black"),
+    axis.ticks = element_line(color = "black"),
+    plot.title = element_blank(),  # Remove map title
+    plot.margin = margin(5, 5, 5, 5))+
+  theme(
+    legend.position = c(1, 0.01),  # Bottom-left corner
+    legend.justification = c(1, 0),  # Anchor the legend box at its bottom-left
+    legend.background = element_rect(fill = "aliceblue", color = "aliceblue"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 8),
+    legend.key.height = unit(0.6, "cm"),
+    legend.key.width = unit(0.6, "cm"),
+    legend.margin = margin(0.5, 0.0, 0.0, 0.0, "cm"))+
+  labs(fill = "Number of\nobservations", x = "Longitude", y = "Latitude")
+
+ggsave("../Images/map_observations_ecoregions_legend.png", ecoregions_legend, width= 6, height = 4)
+ggsave("../Images/map_observations_ecoregions.png", p, width= 8, height= 6)
+
+```
+
+
+
+## 2.4 Temporal
+```{r}
+# change dates
+interactions$date <- as.Date(interactions$date, format= c("%Y/%m/%d"))
+
+interactions <- interactions |> 
+  mutate(time_period = cut(as.Date(date),
+         breaks = as.Date(c("1995-01-01","2010-01-01" ,"2025-12-31")), right =F))
+
+period_counts <- table(interactions$time_period)
+
+interactions$year <- as.integer(format(interactions$date, "%Y"))
+
+p <- ggplot(interactions) +
+  geom_histogram( aes(x = year, fill = time_period),binwidth = 1, boundary = 0.5) +
+  scale_y_log10( breaks = 10^(0:5), labels = scales::trans_format("log10", scales::math_format(10^.x)))+
+  theme_pubr() +
+  ylab("Number of observations") +
+  xlab("Year")+
+  theme(legend.position = "bottom", legend.title = element_blank())+
+  scale_colour_manual(name="time_period", 
+      values = c("1995-01-01" = "skyblue", "2010-01-01" = "steelblue"),
+      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
+                 paste0("2010-2025 (n = ", period_counts[2], ")")))+
+  scale_fill_manual(name="time_period",
+      values = c("1995-01-01" = "skyblue", "2010-01-01" = "steelblue"),
+      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
+                 paste0("2010-2025 (n = ", period_counts[2], ")")))
+
+ggsave("../Images/timescale_period.png", p, width= 5, height= 3)
+```
+
+# 3 SAVE
+```{r}
+# save
+write_csv(interactions, "../Results/Interaction_final.csv")
 ```
 

@@ -118,7 +118,7 @@ process_one_id_inat <- function(id, photos, api_key){
 
 total_ids <- length(id_pol)
 batches <- split(id_pol, ceiling(seq_along(id_pol)/batch_size))
-batches <- batches[1:5]
+batches <- batches[1:10]
 
 begin <- Sys.time()
 

@@ -629,16 +629,17 @@ names$type[names$type== "variety" & grepl("subsp.", names$taxa)] <- "subspecies"
 
 # create subspecies column and assign
 names$subspecies <- NA
-names$subspecies[names$type=="subspecies"] <- names$taxa[names$type=="subspecies"]
+names$subspecies[names$type=="subspecies"] <- names$GBIF[names$type=="subspecies"]
+names$subspecies[names$type=="variety"] <- names$GBIF[names$type=="variety"]
 
 # species names
 unique(names$type) 
 names$species <- NA
 names$species[names$type=="species"] <- names$GBIF[names$type=="species"]
-names$species[names$type=="subspecies"] <- sapply(strsplit(names$subspecies[!is.na(names$subspecies)], " "), 
+names$species[names$type=="subspecies"] <- sapply(strsplit(names$subspecies[!is.na(names$subspecies) & names$type=="subspecies"], " "), 
                                                   function(z) paste(z[1:2], collapse = " "))
-names$species[names$type=="variety"] <- sapply(strsplit(names$taxa[names$type=="variety"], " "), 
-                                               function(z) paste(z[1:2], collapse = " "))
+names$species[names$type=="variety"] <- sapply(strsplit(names$subspecies[!is.na(names$subspecies) & names$type=="variety"], " "), 
+                                                  function(z) paste(z[1:2], collapse = " "))
 names$species[names$type=="complex"] <- names$GBIF[names$type=="complex"]
 names$species[names$type=="hybrid"] <- names$GBIF[names$type=="hybrid"]
 # check which types remain
@@ -695,6 +696,16 @@ names[is.na(names$genus) ,] <- genus_not_yet
 ```
 
 
+```{r}
+# add subspecies
+names <- names %>%  mutate( subspecies = if_else( str_count(subspecies, " ") >= 2 & !str_detect(subspecies, "subsp\\.") & type=="subspecies",
+      str_replace(subspecies, "^([A-Za-z]+\\s+[A-Za-z]+)\\s+","\\1 subsp. "),  subspecies))
+names <- names %>%  mutate( subspecies = if_else( str_count(subspecies, " ") >= 2 & !str_detect(subspecies, "var\\.") & type=="variety",
+      str_replace(subspecies, "^([A-Za-z]+\\s+[A-Za-z]+)\\s+","\\1 var. "),  subspecies))
+```
+
+
+
 ## 3 SAVE
 ```{r}
 # look at numbers
@@ -733,5 +744,8 @@ obs <- obs[!obs$`validation status` == "rejected", ]
 
 # save
 write_csv(obs, "../Data/Observation/observation_org_bees.csv")
+
+# how many observations
+nrow(obs[obs$`has photos` | !is.na(obs$obs_rank),])
 ```
 
