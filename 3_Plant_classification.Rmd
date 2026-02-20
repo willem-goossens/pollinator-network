@@ -1,0 +1,91 @@
+---
+title: "Plant classification"
+author: "Willem Goossens"
+date: "2026-02-19"
+output: html_document
+---
+
+# 1 START
+## 1.1 Packages
+```{r}
+rm(list =ls())
+```
+
+
+```{r}
+library(tidyverse)
+```
+
+## 1.2 Interactions
+```{r}
+# load data
+interactions <- read_csv("../Results/Interaction_final.csv", show_col_types = FALSE)
+
+
+# get genus and family data
+interactions$obs_genus[is.na(interactions$obs_genus)] <- interactions$plantnet_genus[is.na(interactions$obs_genus)] 
+interactions$obs_family[is.na(interactions$obs_family)] <- interactions$plantnet_family[is.na(interactions$obs_family)] 
+
+# get specific data only
+plants <- interactions |> group_by(plant_taxa, obs_genus, obs_family, plant_rank_final, euromed_region) |> summarise(n= n())
+plants <- plants[plants$plant_rank_final=="Species",]
+```
+
+## 1.3 Native
+```{r}
+# load data
+neophyte<-readxl::read_excel("~/Doctoraat/Impact/Extra data/Species names/Irena_taxa_update.xlsx")
+
+# link with splants
+plants$eva_name[plants$plant_taxa %in% neophyte$species] <- plants$plant_taxa[plants$plant_taxa %in% neophyte$species]
+sum(is.na(plants$eva_name))
+plants$eva_name[is.na(plants$eva_name)] <- neophyte$species[match(plants$plant_taxa[is.na(plants$eva_name)], neophyte$`Matched concept` )]
+sum(is.na(plants$eva_name))
+plants$eva_name[is.na(plants$eva_name)] <- neophyte$species[match(plants$plant_taxa[is.na(plants$eva_name)], neophyte$irena )]
+sum(is.na(plants$eva_name))
+
+# check the ones without a matching name
+missing <- plants[is.na(plants$eva_name) & !duplicated(plants$plant_taxa),]
+names <- read_csv("../Data/Names/Names_plants_observation.csv", show_col_types = FALSE)
+missing$synonym <- names$`taxa`[match(missing$plant_taxa, names$species)]
+missing$eva_name[!is.na(missing$synonym)] <- neophyte$species[match(missing$plant_taxa[!is.na(missing$synonym)] , neophyte$species )]
+missing$eva_name[!is.na(missing$synonym)] <- neophyte$species[match(missing$synonym[!is.na(missing$synonym)] , neophyte$species )]
+
+
+# check whether regions correspond
+plant_regions <- unique(plants$euromed_region)
+neophyte_regions <- unique(neophyte$Region)
+
+# assign again
+plants[is.na(plants$eva_name) & !duplicated(plants$plant_taxa),] <- missing[, -8]
+sum(is.na(plants$eva_name))
+
+# check the ones without a matching name
+missing <- plants[is.na(plants$eva_name) & !duplicated(plants$plant_taxa),]
+
+# check which do not correspond
+plant_regions[!plant_regions %in% neophyte_regions]
+change_regions <- data.frame(new = plant_regions[!plant_regions %in% neophyte_regions],
+                             old = c("Czech.Republic","Republic.of.Ireland","United.Kingdom",
+                                     "Bosnia.Herzegovina","Macedonia","Serbia+Kosovo"))
+
+neophyte$Region[neophyte$Region %in% change_regions$old] <-
+  change_regions$new[match(neophyte$Region[neophyte$Region %in% change_regions$old], change_regions$old)]
+
+
+# assign classes
+plants <- left_join(plants, neophyte[, c(2,3,6)], by= c("eva_name"="species","euromed_region"="Region"))
+sum(!is.na(plants$Neophyte))/nrow(plants)
+plants$Neophyte[is.na(plants$Neophyte) & plants$plant_taxa %in% neophyte$species[neophyte$Neophyte=="extra"]] <- "extra"
+sum(!is.na(plants$Neophyte))/nrow(plants)
+
+# check number of missing interactions
+sum(plants$n[is.na(plants$Neophyte)])/sum(plants$n)
+# about 30% of interactions not assigned
+```
+
+
+```{r}
+# assign 
+interactions$status <- plants$Neophyte[match(interactions$plant_taxa, plants$plant_taxa)]
+```
