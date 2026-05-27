@@ -1,0 +1,249 @@
+---
+title: "Case study"
+author: "Willem Goossens"
+date: "2026-05-12"
+output: html_document
+---
+
+# 1 INTRO
+Empty environment
+```{r}
+rm(list=ls())
+```
+
+Load packages
+```{r}
+library(tidyverse)
+library(bipartite)
+library(mgcv)
+```
+
+Load data
+```{r}
+# overall dataset
+data <- read_csv("../Data/Observation/plantnet_dataset.csv", show_col_types = FALSE)
+```
+
+
+
+# 2 URBAN-RURAL
+```{r}
+# downsample
+data <- data[data$Observation_quality %in% c("Research","accepted (automatic validation)", "accepted (with evidence)","accepted (plausible)"),]
+data <- data[data$Plantnet_score >= 0.641 | !is.na(data$Plant_user), ]
+data <- data[data$Plantnet_rank %in% c("subspecies","species") | data$User_rank %in% c("subspecies","species") ,]
+
+# get the final name
+data$Plant_name <- data$Plant_user
+data$Plant_rank <- data$User_rank
+data$Plant_name[is.na(data$Plant_name)] <- data$Plant_plantnet[is.na(data$Plant_name)] 
+data$Plant_rank[is.na(data$Plant_rank)] <- data$Plantnet_rank[is.na(data$Plant_rank)] 
+
+data <- data[data$`Euro+Med_region` == "Belgium",]
+
+# get those with at least 2 interactions
+data <- data |>   group_by(Pollinator, Plant_name, Landcover_class) |>  filter(n() >= 2) |>  ungroup()
+```
+
+
+```{r}
+# create database
+metrics <- data.frame(Class = unique(data$Landcover_class))
+i <- metrics$Class[1]
+for(i in metrics$Class){
+  # assign class dataset
+  subset <- data[data$Landcover_class == i,]
+  obs <- nrow(subset)
+  int <- nrow(subset |> group_by(Plant_name, Pollinator) |> summarise(n =n()))
+  
+  
+  # make interaction dataset
+  subset <- subset |> dplyr::count(Pollinator, Plant_name) |> 
+    tidyr::pivot_wider(names_from = Pollinator, values_from = n, values_fill = 0 ) |> as.matrix()
+  subset <- as.data.frame(subset)
+  subset <- subset[!is.na(subset$Plant_name),]
+  subset[,-1] <- as.data.frame(sapply( subset[,-1], as.numeric )  )
+  subset[,-1] <- ifelse(subset[,-1] > 0, 1, 0 )
+  
+  # calculate relevant metrics
+  connectance <- networklevel(subset[, -1], index  = c("connectance","NODF"))
+  # assign
+  metrics$obs[metrics$Class == i] <- obs
+  metrics$int[metrics$Class == i] <- int
+  metrics$pol[metrics$Class == i] <- ncol(subset[,-1])
+  metrics$plant[metrics$Class == i]  <- nrow(subset[,-1])
+  metrics$connectance[metrics$Class == i] <- connectance[1]
+  metrics$NODF[metrics$Class == i] <- connectance[2]
+  
+  # make null model
+  null_model <- nullmodel(subset[, -1], N = 99, method = "shuffle.web")
+  null_metrics <- sapply(null_model, networklevel, index = c("NODF"))
+  metrics$NODF_null[metrics$Class == i] <- mean(null_metrics)
+  metrics$NODF_null_sd[metrics$Class == i] <- sd(null_metrics)
+  assign(paste("null_metrics",i, sep= "_"), null_metrics)
+  
+  # assign z score
+  z_score <- (connectance[2] - mean(null_metrics)) / sd(null_metrics)
+  p_value <- 2 * pnorm(-abs(z_score))
+  
+  
+  
+  # assign p value
+  praw <- (sum(null_metrics > connectance[2] ) +1 ) / 100
+  metrics$p_value[metrics$Class == i] <- praw
+}
+
+
+# check p values using the first approach
+z_score_urban <- (metrics$NODF[metrics$Class == "Urban"]  - mean(null_metrics_Urban)) / sd(null_metrics_Urban)
+p_value_urban <- 2 * pnorm(-abs(z_score_urban))
+z_score_nature <- (metrics$NODF[metrics$Class == "Nature"]  - mean(null_metrics_Nature)) / sd(null_metrics_Nature)
+p_value_nature <- 2 * pnorm(-abs(z_score_nature))
+z_score_agriculture <- (metrics$NODF[metrics$Class == "Agriculture"] - mean(null_metrics_Agriculture)) /
+  sd(null_metrics_Agriculture)
+p_value_agriculture <- 2 * pnorm(-abs(z_score_agriculture))
+
+#write_csv(metrics, "../Data/Observation/metrics_NODF_gradient.csv")
+```
+
+
+
+# 3 PHENOLOGY
+Load additional packages
+```{r}
+library(lme4)
+library(lmerTest)
+library(ggeffects)
+```
+
+
+Load data
+```{r}
+# overall dataset
+data <- read_csv("../Data/Observation/plantnet_dataset.csv", show_col_types = FALSE)
+```
+
+
+Subset
+```{r}
+# only knautia bee
+knautia <- data[data$Pollinator == "Andrena hattorfiana",]
+
+# get the final name
+knautia$Plant_name <- knautia$Plant_user
+knautia$Plant_rank <- knautia$User_rank
+knautia$Plant_name[is.na(knautia$Plant_name)] <- knautia$Plant_plantnet[is.na(knautia$Plant_name)] 
+knautia$Plant_rank[is.na(knautia$Plant_rank)] <- knautia$Plantnet_rank[is.na(knautia$Plant_rank)] 
+
+# check number with Knautia arvensis
+knautia <- knautia[knautia$Plant_name == "Knautia arvensis" & !is.na(knautia$Plant_name),]
+
+# how many unique regions are this
+knautia  |> group_by(`Euro+Med_region`) |> summarise(n = n())
+
+# assign DOY
+knautia$DOY <-  as.numeric(strftime(knautia$Date, format = "%j"))
+```
+
+## 3.1 GAM
+```{r}
+# we use the gam method
+mod_gam <- gam(DOY ~ MAP * MAT + s(Longitude, Latitude, bs = "gp", k = 20),
+               data = knautia, method = "REML")
+summary(mod_gam)
+```
+
+
+```{r}
+# predict
+plot_pred <- ggeffects::predict_response(mod_gam, c("MAT"))
+mean(plot_pred$predicted)
+    
+y_max <- max(plot_pred$predicted, na.rm = TRUE) * 1.25
+y_min <-  min(plot_pred$predicted, na.rm = TRUE) * 0.75
+
+# predicted points    
+MAT <-ggplot(plot_pred, aes(x=x, y= predicted))+
+      # geometric points
+      geom_point(data=knautia, aes(MAT, DOY))+
+      geom_line(linewidth=2)+
+      geom_ribbon(data=plot_pred, aes(ymin= conf.low, ymax= conf.high), alpha=0.5, col= "orangered", fill= "orangered")+
+      ggpubr::theme_pubr()+
+      xlab("MAT [°C]")+
+      ylab("DOY")+
+      theme(legend.position = "none")
+MAT
+```
+
+
+
+```{r}
+# predict
+plot_pred <- ggeffects::predict_response(mod_gam, c("MAP"))
+mean(plot_pred$predicted)
+    
+y_max <- max(plot_pred$predicted, na.rm = TRUE) * 1.25
+y_min <-  min(plot_pred$predicted, na.rm = TRUE) * 0.75
+
+# predicted points    
+MAP <-ggplot(plot_pred, aes(x=x, y= predicted))+
+      # geometric points
+      geom_point(data=knautia, aes(MAP, DOY))+
+      geom_line( linewidth=2, linetype = "dotted")+
+      geom_ribbon(data=plot_pred, aes(ymin= conf.low, ymax= conf.high), alpha=0.5, col= "skyblue", fill= "skyblue")+
+      ggpubr::theme_pubr()+
+      xlab("MAP [mm]")+
+      ylab("DOY")+
+      theme(legend.position = "none")
+MAP
+```
+
+```{r}
+plot <-ggpubr::ggarrange(MAT, MAP,  ncol = 2, labels = c("a","b"))
+ggsave( "../Images/case_study_phenology.png", plot, width =8, height = 4)
+```
+
+
+
+## 3.2 Interaction
+```{r}
+# if we want to plot the interaction
+plot_data <- expand.grid(
+  MAP = c(500, 1000, 1500, 2000),
+  MAT = c(0, 5, 10, 15),
+  Longitude = mean(knautia$Longitude),
+  Latitude = mean(knautia$Latitude)
+)
+
+# check ranges for MAT en MAP
+summary(knautia$MAT)
+summary(knautia$MAP)
+
+# predict new data and standard error
+pred <- predict(mod_gam, newdata = plot_data, se.fit=T, re.form=NA)
+
+# bind to data
+pred_df <- cbind(plot_data, predicted = pred$fit,  # Extract fixed effects predictions
+                 lower_CI = pred$fit - 1.96*pred$se.fit,
+                 upper_CI = pred$fit + 1.96*pred$se.fit)
+
+
+# plot
+ggplot() +
+  # geometric points
+  geom_point(data=knautia, aes(MAT, DOY, group=MAP, fill=MAP, colour = MAP))+
+  # line at each level of the WD
+  geom_line(data=pred_df, aes(x = MAT, y = predicted, colour= MAP, group=MAP)) +
+  # titles of axes and legend
+  labs(x = "MAT [°C]", y = "DOY", color = "MAP") +
+  theme_minimal()+
+  # confidence intervals
+  geom_ribbon(data=pred_df, aes(x= MAT, ymin = lower_CI, ymax = upper_CI, group=MAP, fill=MAP),
+              alpha = 0.1, linetype=0)+
+  # Scale color gradient for MAP
+  scale_color_gradient(name="MAP [mm]", low = "lightblue", high = "darkblue")+
+  scale_fill_gradient(name="MAP [mm]", low = "lightblue", high = "darkblue")+
+  theme(text = element_text(size = 20),axis.title = element_text(size = 22), axis.text = element_text(size=20))
+
+```
+

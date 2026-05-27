@@ -1,0 +1,642 @@
+---
+title: "Dataset merging"
+author: "Willem Goossens"
+date: "2026-05-07"
+output: html_document
+---
+
+
+# 1 INTRO
+Empty environment
+```{r}
+rm(list=ls())
+```
+
+Load packages
+```{r}
+library(tidyverse)
+library(xml2)
+library(plantnet)
+library(sf)
+library(sp)
+library(terra)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(marmap) 
+library(ggnewscale)
+```
+
+Load data
+```{r}
+# overall dataset
+pol <- read_csv("../Data/Observation/observation_org_bees_dataset.csv", show_col_types = FALSE)
+nat <- read_csv("../Data/Observation/iNaturalist_bees_dataset.csv", show_col_types = FALSE)
+```
+
+## 1.1 Observation.org
+```{r}
+# check colnames
+colnames(pol)
+unique(pol$activity)
+
+# update plant column
+pol$plant_observed <- pol$obs_subspecies
+pol$plant_observed[is.na(pol$plant_observed)] <- pol$obs_species[is.na(pol$plant_observed)]
+pol$plant_observed[is.na(pol$plant_observed)] <- pol$obs_genus[is.na(pol$plant_observed)]
+pol$plant_observed[is.na(pol$plant_observed)] <- pol$obs_family[is.na(pol$plant_observed)]
+
+
+# update plant column
+pol$plantnet <- pol$plantnet_subspecies
+pol$plantnet[is.na(pol$plantnet)] <- pol$plantnet_species[is.na(pol$plantnet)]
+pol$plantnet[is.na(pol$plantnet)] <- pol$plantnet_genus[is.na(pol$plantnet)]
+pol$plantnet[is.na(pol$plantnet)] <- pol$plantnet_family[is.na(pol$plantnet)]
+
+
+
+
+# get downsized databases with data present in both
+pol_data <- pol |> dplyr::select(id, date, time, lat, lng, accuracy, euromed_region, validation.status,
+                                 name, pol_rank, pol_subspecies, pol_species, pol_genus, pol_family,
+                                 scientific.name, family, species.type, number, sex, life.stage, activity,
+                                 plantnet, plantnet_rank, 
+                                 plantnet_subspecies, plantnet_species, plantnet_genus , plantnet_family , plantnet_score, plantnet_organ,
+                                 plant_observed, obs_rank, obs_subspecies, obs_species, obs_genus, obs_genus, obs_family, related.species,
+                                 link)
+
+pol_data$source <- "Observation.org"
+pol_data <- pol_data |> relocate(source, .before = id)
+
+colnames(pol_data) <- c("Platform","Obs_ID","Date","Time","Latitude","Longitude","Coordinate_uncertainty","Euro+Med_region","Observation_quality",
+                        "Pollinator","Pollinator_rank","Pol_subspecies","Pol_species","Pol_genus","Pol_family",
+                        "Pol_original","Pol_family_original","Pol_rank_original","Number","Sex","Life_stage","Activity",
+                        "Plant_plantnet","Plantnet_rank",
+                        "Plantnet_subspecies","Plantnet_species", "Plantnet_genus","Plantnet_family", "Plantnet_score", "Plantnet_organ",
+                        "Plant_user","User_rank","User_subspecies","User_species","User_genus","User_family", "User_original",
+                        "Link")
+```
+
+
+## 1.2 Naturalist 
+```{r}
+# final names are not correct for bees yet
+nat$pol <- nat$subspecies
+nat$pol[is.na(nat$pol)] <- nat$species[is.na(nat$pol)]
+nat$pol[is.na(nat$pol)] <- nat$genus[is.na(nat$pol)]
+nat$pol[is.na(nat$pol)] <- nat$family[is.na(nat$pol)]
+
+
+# update plant column
+nat$plantnet <- nat$plantnet_subspecies
+nat$plantnet[is.na(nat$plantnet)] <- nat$plantnet_species[is.na(nat$plantnet)]
+nat$plantnet[is.na(nat$plantnet)] <- nat$plantnet_genus[is.na(nat$plantnet)]
+nat$plantnet[is.na(nat$plantnet)] <- nat$plantnet_family[is.na(nat$plantnet)]
+
+# to assign the link
+nat$link <- paste("https://www.inaturalist.org/observations/", nat$observation_uuid, sep= "")
+
+# strange problem genera iNaturalist
+
+
+# iNaturalist
+colnames(nat)
+nat_data <- nat |> dplyr::select(observation_uuid, observed_on,  latitude, longitude,positional_accuracy, Country, quality_grade,
+                                 pol, rank, subspecies, species, genus, family,   
+                                 name, 
+                                 plantnet, plantnet_rank, 
+                                 plantnet_subspecies, plantnet_species, plantnet_genus, plantnet_family, plantnet_score, plantnet_organ,
+                                 link)
+
+# assign source
+nat_data$source <- "iNaturalist.org"
+nat_data <- nat_data |> relocate(source, .before = observation_uuid)
+
+colnames(nat_data) <- c("Platform","Obs_ID","Date", "Latitude","Longitude","Coordinate_uncertainty","Euro+Med_region","Observation_quality",
+                        "Pollinator","Pollinator_rank","Pol_subspecies","Pol_species","Pol_genus","Pol_family",
+                        "Pol_original",
+                        "Plant_plantnet","Plantnet_rank",
+                        "Plantnet_subspecies","Plantnet_species", "Plantnet_genus","Plantnet_family", "Plantnet_score", "Plantnet_organ",
+                        "Link")
+```
+
+## 1.3 Merge
+```{r}
+# save 
+pol_data$Obs_ID <- as.character(pol_data$Obs_ID)
+pol_data$Date <- as.Date(pol_data$Date, format = "%Y-%m-%d")
+nat_data$Date <- as.Date(nat_data$Date, format = "%Y-%m-%d")
+
+# combine
+data <- bind_rows(pol_data, nat_data)
+data <- data |> relocate(Link, .before = Pollinator)
+```
+
+```{r}
+# summary(data)
+# colnames(data)
+
+# change some pollinator ranks
+names <- data |> group_by(Pollinator, Pollinator_rank) |> summarise(n=n())
+dup <- names[duplicated(names$Pollinator) | duplicated(names$Pollinator, fromLast= T),]
+
+# strange, adapt
+dup$Pollinator_rank <- c("Species","Species",
+                         "Species","Species", 
+                        "Species","Species",
+                        "Species","Species")
+
+# change in overal database
+data$Pollinator_rank[data$Pollinator %in% dup$Pollinator] <- 
+  dup$Pollinator_rank[match(data$Pollinator[data$Pollinator %in% dup$Pollinator], dup$Pollinator)]
+
+# some observations lack a plant identity, remove these
+# equals to about 645.987 observations
+sum(is.na(data$Plant_plantnet) & is.na(data$Plant_user))
+data <- data[!(is.na(data$Plant_plantnet) & is.na(data$Plant_user)),]
+
+data$Pol_family[data$Pollinator %in% "Coelioxys afra"] <- "Megachilidae"
+data$Pollinator_rank[data$Pollinator_rank %in% "species"] <- "Species"
+
+syn <- data[data$Pollinator_rank=="Synonym",]
+data$Pollinator_rank[data$Pollinator_rank %in% "Synonym"] <- "Species"
+data$Pol_species[data$Pollinator %in% "Andrena pelagica"] <- "Andrena rugothorace"
+data$Pollinator[data$Pollinator %in% "Andrena pelagica"]  <- "Andrena rugothorace"
+
+# check some subgenera
+data$Pol_genus[data$Pollinator %in% "Megabombus"] <- "Bombus"
+data$Pol_genus[data$Pollinator %in% "Melandrena"] <- "Andrena"
+data$Pol_genus[data$Pollinator %in% "Paramegilla"] <- "Anthophora"
+data$Pol_genus[data$Pollinator %in% "Thoracobombus "] <- "Bombus"
+data$Pollinator_rank[data$Pollinator %in% "Megabombus"]  <- "Subgenus"
+data$Pollinator_rank[data$Pollinator %in% "Melandrena"]  <- "Subgenus"
+data$Pollinator_rank[data$Pollinator %in% "Paramegilla"]  <- "Subgenus"
+data$Pollinator_rank[data$Pollinator %in% "Thoracobombus"]  <- "Subgenus"
+
+# fix a species
+data$Pol_genus[data$Pollinator %in% "Eupavlovskia"] <- "Melecta"
+data$Pollinator[data$Pollinator %in% "Eupavlovskia"] <- "Melecta"
+```
+
+```{r}
+# get the final name
+data$Plant_name <- data$Plant_user
+data$Plant_rank <- data$User_rank
+data$Plant_name[is.na(data$Plant_name)] <- data$Plant_plantnet[is.na(data$Plant_name)] 
+data$Plant_rank[is.na(data$Plant_rank)] <- data$Plantnet_rank[is.na(data$Plant_rank)] 
+
+# check some subspecies
+subsp <- data |> group_by(Plant_name, Plant_rank) |> summarise(n =n()) |> filter(Plant_rank == "subspecies")
+subsp_split <- vegdata::parse.taxa(subsp$Plant_name)
+subsp$Plant_rank[is.na(subsp_split$rank.suff)] <- "species"
+
+# subspecies assigned fixed
+data$Plant_rank[data$Plant_name %in% subsp$Plant_name[is.na(subsp_split$rank.suff)]] <- "species"
+```
+
+
+
+
+```{r}
+# there are many duplicates in the coordinates, check
+data_dup_coord <- data[duplicated(data[, c(5:6)]) | duplicated(data[, c(5:6)], fromLast=T),]
+# we cannot possibly check this
+```
+
+
+```{r}
+names <- data |> group_by(Pol_subspecies, Pol_species, Pol_genus, Pol_family) |> summarise(n=n())
+write_csv(data, "../Data/Observation/plantnet_dataset.csv")
+```
+
+
+# 2 Data
+## 2.1 Ecoregion
+```{r}
+# reduce dataset
+coord <- data |> dplyr::select("Obs_ID", "Euro+Med_region","Latitude", "Longitude")
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("Longitude","Latitude"),crs = 4326)
+
+# read data
+eco <- read_sf("../Extra/Regions/Ecoregions/Ecoregions2017.shp")
+# transform CSR
+eco <- st_transform(eco, CRS("+proj=longlat +datum=WGS84"))
+
+# only get Europe realm
+eco <- eco[eco$REALM =="Palearctic",]
+
+# create box around Europe
+europe_polygon <- st_bbox(c(xmin = -30, xmax = 80, ymin = 20, ymax = 90))
+europe_polygon <- st_as_sfc(europe_polygon)
+
+# check regions
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# crop to regions
+sf_use_s2(F)
+eco <- st_crop(eco, europe_polygon)
+eco <- st_crop(eco, medRegions, crop=F)
+sf_use_s2(T)
+
+# plot
+# ggplot() + geom_sf(data = eco, size = 0.5, aes(fill = COLOR),show.legend = FALSE) + coord_sf()+ theme_minimal()+geom_sf(data = coord)
+
+# assign 
+joinedData <- st_join(coord, eco, join = st_nearest_feature)
+
+# assign to interactions
+data$Ecoregion <- joinedData$ECO_NAME[match(data$Obs_ID, joinedData$Obs_ID)]
+data$Biome <- joinedData$BIOME_NAME[match(data$Obs_ID, joinedData$Obs_ID)]
+
+# check numbers
+data |> group_by(Biome) |> summarise(n= n())
+```
+
+
+## 2.2 Cover
+```{r}
+# read data
+cor2000 <-  rast("../Extra/CORINE/U2006_CLC2000_V2020_20u1.tif") 
+cor2006 <-  rast("../Extra/CORINE/U2012_CLC2006_V2020_20u1.tif") 
+cor2012 <-  rast("../Extra/CORINE/U2018_CLC2012_V2020_20u1.tif")
+cor2018 <-  rast("../Extra/CORINE/U2018_CLC2018_V2020_20u1.tif") 
+
+
+
+# reduce dataset
+coord <- data |> dplyr::select("Obs_ID", "Euro+Med_region","Date","Latitude", "Longitude")
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("Longitude","Latitude"),crs = 4326) |> st_transform(crs(cor2000))
+
+# create dataset
+corine_list <- list("2000" = cor2000, "2006" = cor2006, "2012" = cor2012, "2018" = cor2018)
+corine_years <- c(2000, 2006, 2012, 2018)
+
+# assign closest CORINE year to each observation
+coord$corine_year <- corine_years[apply(abs(outer(year(coord$Date), corine_years, "-")), 1, which.min)]
+
+# extract per raster, only for matching rows
+coord$landcover <- NA
+
+for (yr in names(corine_list)) {
+  idx <- coord$corine_year == as.integer(yr)
+  if (any(idx)) {
+    extracted <- terra::extract(corine_list[[yr]], coord[idx, ])[, 2]
+    
+    # fill NAs with nearest cell within buffer
+    still_na <- which(is.na(extracted))
+    if (length(still_na) > 0) {
+      extracted[still_na] <- terra::extract(
+        corine_list[[yr]],
+        coord[idx, ][still_na, ],
+        buffer = 5000,  # expand if needed
+        fun = modal,
+        na.rm = TRUE
+      )[, 2]
+    }
+    coord$landcover[idx] <- extracted
+  }
+}
+```
+
+
+```{r}
+# check unique classes
+qml <- read_xml("../Extra/CORINE/clc_legend_qgis_raster.qml")
+
+clc_legend <- xml_find_all(qml, ".//paletteEntry") |>
+  lapply(\(node) data.frame(
+    value = as.integer(xml_attr(node, "value")),
+    label = xml_attr(node, "label"),
+    color = xml_attr(node, "color"),
+    stringsAsFactors = FALSE
+  )) |>
+  do.call(rbind, args = _)
+
+# split CLC code from label
+clc_legend$clc_code <- as.integer(sub("^(\\d+) - .*", "\\1", clc_legend$label))
+clc_legend$label    <- sub("^\\d+ - ", "", clc_legend$label)
+
+# add the general landscape
+clc_legend$category <- dplyr::case_when(
+  clc_legend$clc_code %in% 100:199 ~ "Urban",
+  clc_legend$clc_code %in% 200:299 ~ "Agriculture",
+  clc_legend$clc_code %in% 300:399 ~ "Nature",
+  clc_legend$clc_code %in% 400:499 ~ "Wetland",
+  clc_legend$clc_code %in% 500:599 ~ "Water",
+  .default = NA_character_)
+```
+
+
+```{r}
+# assign 
+coord$Landcover <- clc_legend$label[match(coord$landcover, clc_legend$value)]
+coord$Landcover_class <- clc_legend$category[match(coord$landcover, clc_legend$value)]
+
+data$Landcover <- coord$Landcover[match(data$Obs_ID, coord$Obs_ID)]
+data$Landcover_class <- coord$Landcover_class[match(data$Obs_ID, coord$Obs_ID)]
+
+# count
+table(data$Landcover_class)
+colnames(data)
+```
+
+## 2.3 Climate
+```{r}
+# Load data
+chelsaT<- rast("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/ENV/bio1.tif")
+chelsaP<- rast("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/ENV/bio12.tif")
+elev<- rast("C:/Users/u0166342/Documents/Doctoraat/Impact/Extra data/ENV/Elev.tif")
+
+# create box around Europe
+europe_bbox <- st_bbox(c(xmin = -30, xmax = 80, ymin = 25, ymax = 90))
+europe_polygon <- st_as_sfc(europe_bbox)
+
+# crop this box and reproject
+chelsaT<- crop(chelsaT, europe_polygon)
+chelsaT<- terra::project(chelsaT, "+proj=longlat +datum=WGS84")
+chelsaP<- crop(chelsaP, europe_polygon)
+chelsaP<- terra::project(chelsaP, "+proj=longlat +datum=WGS84")
+elev<- crop(elev, europe_polygon)
+elev<- terra::project(elev, "+proj=longlat +datum=WGS84")
+
+# reduce dataset
+coord <- data |> dplyr::select("Obs_ID", "Euro+Med_region","Latitude", "Longitude")
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("Longitude","Latitude"),crs = 4326)
+st_crs(coord) <- CRS("+proj=longlat +datum=WGS84")
+
+
+# assign MAT
+test<- terra::extract(chelsaT, coord[,c(3)])
+# Combine 
+coord<- bind_cols(coord, test[,2])
+colnames(coord)[4] <- "MAT"
+
+# check remaining
+any(is.na((coord$MAT)))
+
+
+# assign MAP
+test<- terra::extract(chelsaP, coord[,c(3)])
+# Combine 
+coord<- bind_cols(coord, test[,2])
+colnames(coord)[5] <- "MAP"
+
+# check remaining
+any(is.na((coord$MAP)))
+
+
+# assign Elevation
+test<- terra::extract(elev, coord[,c(3)])
+# Combine 
+coord<- bind_cols(coord, test[,2])
+colnames(coord)[6] <- "Elevation"
+
+
+# remove the geometry
+st_geometry(coord) <- NULL
+
+# merge with data
+data <- left_join(data, coord)
+
+any(duplicated(data$Obs_ID))
+sum(duplicated(data$Obs_ID))
+dup <- data[duplicated(data$Obs_ID) | duplicated(data$Obs_ID, fromLast=T), ]
+```
+
+
+
+## 2.4 Save
+```{r}
+write_csv(data, "../Data/Observation/plantnet_dataset.csv")
+```
+
+
+
+
+# 3 MAP
+## 3.1 Prepare
+```{r}
+coord <- data |> dplyr::select("Obs_ID", "Euro+Med_region","Latitude", "Longitude")
+
+
+# Load world map and bathymetry data
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+# Define Europe bounding box
+map_bbox <- c(-24.53266, 60, 34.8015, 72)  
+# Download bathymetry data
+bathy_data <- getNOAA.bathy(
+  lon1 = map_bbox[1], lon2 = map_bbox[2],
+  lat1 = map_bbox[3], lat2 = map_bbox[4],
+  resolution = 5
+)
+
+
+# Convert bathymetry to raster
+bathy_raster <- marmap::as.raster(bathy_data)
+bathy_df <- as.data.frame(as(bathy_raster, "SpatialPixelsDataFrame"))
+colnames(bathy_df) <- c("elevation", "x", "y")
+
+
+# Read and transform observation points
+coord <-coord <- st_as_sf(coord, coords = c("Longitude","Latitude"), remove = FALSE) %>%
+  st_set_crs(4326) %>%
+  st_transform(4326)
+
+
+# check regions
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# Create a grid over Europe
+grid <- st_make_grid(medRegions, cellsize = 0.5, square = TRUE) %>% st_sf()
+```
+
+
+```{r}
+# add relevant ecoregions
+eco <- eco  %>% st_set_crs(4326) %>% st_transform(4326)
+
+# look at which in interactions
+unique(interactions$eco_region)
+
+# we will keep only these
+eco_final <- eco[eco$ECO_NAME %in% interactions$eco_region,]
+eco_final <- eco_final |> dplyr::select("ECO_NAME","COLOR","geometry")
+colnames(eco_final) <- c("Name","Color","geometry")
+eco_final$level <- "Ecoregion"
+
+# these to biome level
+eco_biome_level <- eco[eco$BIOME_NAME %in% interactions$eco_region & 
+                         !(eco$ECO_NAME %in% eco_final$Name),]
+eco_biome_level <- eco_biome_level |> group_by(BIOME_NAME, COLOR_BIO) |> 
+  summarise(geometry = st_union(geometry) , .groups = "drop")
+colnames(eco_biome_level) <- c("Name","Color","geometry")
+eco_biome_level$level <- "Biome"
+
+# merge
+eco_final <- bind_rows(eco_final, eco_biome_level)
+eco_final <- eco_final[order(eco_final$Name),]
+
+
+# add numbers to eco_final
+eco_final$n <- table(interactions$eco_region)
+```
+
+
+```{r}
+# Count points per grid cell
+coord$obs <- 1
+grid_counts <- st_join(grid, coord, join = st_intersects) %>%
+  group_by(geometry) %>%
+  summarise(n = sum(obs, na.rm = TRUE))  # NA if no points
+
+grid_counts$n[grid_counts$n=="0"] <- NA
+grid_counts$obs_cat <- ifelse(is.na(grid_counts$n), "No data", "Data")
+grid_counts$log_n <- log10(grid_counts$n)
+
+grid_counts <- as.data.frame(st_coordinates(st_centroid(grid_counts))) %>%
+  mutate(n = grid_counts$n)
+
+breaks <- 10 ^ seq(floor(log10(min(grid_counts$n[grid_counts$n > 0], na.rm =T))),
+  ceiling(log10(max(grid_counts$n, na.rm =T))), length.out = 8)
+
+breaks <- round(breaks, digits=0)
+```
+
+## 3.2 Map 
+```{r}
+ggplot() +
+ geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),
+    name = "Depth (m)",       # Legend title (hidden in theme below)
+    limits = c(-6000, 0),     # Adjust limits for ocean depths
+    na.value = "aliceblue",   # Color for land areas
+    guide = "none"            # Remove the legend for ocean depth
+  ) +
+  new_scale_fill() +
+  geom_sf(data = world, fill = NA, color = "grey", size = 0.2, alpha=0.2) +
+  # Add country borders
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey", size = 0.2, alpha= 0.5) +
+  # Plot occurrences
+  geom_raster(data = grid_counts, aes(X, Y, fill = n), alpha= 0.8) +
+  scale_fill_viridis_c(option = "inferno", trans= "log", na.value = "NA", direction= 1, 
+                       breaks = breaks, labels = scales::label_number(big.mark = ","))+
+  #scale_fill_viridis_d(option = "inferno", na.value = NA) +
+  # Add country borders
+  geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)+
+  # Define the map extent using the bounding box
+  coord_sf(xlim = c(map_bbox[1], map_bbox[2]), 
+           ylim = c(map_bbox[3], map_bbox[4]), 
+           expand = FALSE) +
+  theme_minimal()+
+  # Customize the theme
+  theme(
+    panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", size = 0.5),
+    panel.background = element_rect(fill = "white", color = NA), 
+    axis.text = element_text(size = 12, color = "black"),
+    axis.ticks = element_line(color = "black"),
+    plot.title = element_blank(),  # Remove map title
+    plot.margin = margin(5, 5, 5, 5))+
+  theme(
+    legend.position = c(1, 0.01),  # Bottom-left corner
+    legend.justification = c(1, 0),  # Anchor the legend box at its bottom-left
+    legend.background = element_rect(fill = "aliceblue", color = "aliceblue"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 8),
+    legend.key.height = unit(0.6, "cm"),
+    legend.key.width = unit(0.6, "cm"),
+    legend.margin = margin(0.5, 0.0, 0.0, 0.0, "cm"))+
+  labs(fill = "Number of\nobservations",
+       x = "Longitude",
+       y = "Latitude")
+
+ggsave("../Images/map_observations.png", width= 8, height= 6)
+```
+
+
+## 3.3 Map Eco
+```{r}
+# Discrete colors for ecoregions/biomes
+eco_colors <- setNames(eco_final$Color, paste(eco_final$Name, "(n =", eco_final$n, ")", sep= " "))
+eco_final$Name <- paste(eco_final$Name, "(n =", eco_final$n, ")", sep= " ")
+
+# Breaks for counts
+breaks <- c(0, 1, 10, 30, 100, 300, 1000, 3000, 10000)
+
+ecoregions <- ggplot() +
+  # Bathymetry
+  geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),
+    limits = c(-6000, 0),
+    na.value = "aliceblue",
+    guide = "none"
+  ) +
+  new_scale_fill() +
+  # Countries
+  geom_sf(data = world, fill = NA, color = "grey60", size = 0.2, alpha = 0.3) +
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey60", size = 0.2, alpha = 0.5) +
+    
+  # Ecoregions / Biomes (discrete)
+  geom_sf(data = eco_final, aes(fill = Name), color = "grey50", size = 0.3, alpha = 0.6) +
+  scale_fill_manual(
+    values = eco_colors,
+    name = "Ecoregion / Biome" )
+
+ecoregions_legend <- get_legend(ecoregions)
+
+p <- ggplot() +
+  # SEA
+  geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
+  scale_fill_gradientn(
+    colors = c("lightblue3", "lightblue2", "lightblue1", "aliceblue"),limits = c(-6000, 0),
+    na.value = "aliceblue", guide = "none") +
+  # COUNTRY
+  new_scale_fill() +
+  geom_sf(data = world, fill = NA, color = "grey60", size = 0.2, alpha = 0.3) +
+  geom_sf(data = medRegions, fill = "antiquewhite", color = "grey60", size = 0.2, alpha = 0.5) +
+  # ECOREGION
+  geom_sf(data = eco_final, aes(fill = Name), size = 0.3, alpha = 0.6,show.legend= F) +
+  scale_fill_manual(values = eco_colors, name = "Ecoregion / Biome") +
+  # RASTER
+  new_scale_fill() +
+  geom_raster(data = grid_counts, aes(X, Y, fill = n), alpha = 0.8) +
+  scale_fill_viridis_c(option = "inferno", trans= "log", na.value = "NA", direction= 1, 
+                       breaks = breaks, labels = scales::label_number(big.mark = ","))+
+  # EXTENT
+  coord_sf(xlim = c(map_bbox[1], map_bbox[2]), ylim = c(map_bbox[3], map_bbox[4]), expand = FALSE) +
+  # THEME
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = gray(0.5), linetype = "dashed", size = 0.5),
+    panel.background = element_rect(fill = "white", color = NA), # Keep a neutral background
+    axis.text = element_text(size = 12, color = "black"),
+    axis.ticks = element_line(color = "black"),
+    plot.title = element_blank(),  # Remove map title
+    plot.margin = margin(5, 5, 5, 5))+
+  theme(
+    legend.position = c(1, 0.01),  # Bottom-left corner
+    legend.justification = c(1, 0),  # Anchor the legend box at its bottom-left
+    legend.background = element_rect(fill = "aliceblue", color = "aliceblue"),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 8),
+    legend.key.height = unit(0.6, "cm"),
+    legend.key.width = unit(0.6, "cm"),
+    legend.margin = margin(0.5, 0.0, 0.0, 0.0, "cm"))+
+  labs(fill = "Number of\nobservations", x = "Longitude", y = "Latitude")
+
+ggsave("../Images/map_observations_ecoregions_legend.png", ecoregions_legend, width= 6, height = 5)
+ggsave("../Images/map_observations_ecoregions.png", p, width= 8, height= 6)
+
+```
+
+
