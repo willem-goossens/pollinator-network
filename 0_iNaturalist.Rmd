@@ -64,8 +64,13 @@ dbDisconnect(con)
 ## 1 Quality
 ```{r}
 # filter to only keep research grade
+nrow(obs_bees[obs_bees$quality_grade != "research",])
+not_research <- obs_bees[obs_bees$quality_grade != "research",]
+
 obs <- obs_bees[obs_bees$quality_grade == "research",]
 
+# if extra
+# obs <- not_research
 # look at uncertainty in coordinates
 # check accuracy
 # how many remove if accuracy not more than 250 m
@@ -73,15 +78,18 @@ length(obs$positional_accuracy[obs$positional_accuracy >250])
 # 680850
 # remove all observations with higher uncertainty
 obs <- obs |> filter(positional_accuracy <= 250)
+not_research <- not_research |> filter(positional_accuracy <= 250)
 ```
 
 ## 2 Date
 ```{r}
 # filter date older than 1995
 obs$observed_on <- as.Date(obs$observed_on)
+not_research$observed_on <- as.Date(not_research$observed_on)
 
 # remove older
 obs <- obs |> filter(observed_on >= "1995-01-01" )
+not_research <- not_research |> filter(observed_on >= "1995-01-01" )
 ```
 
 
@@ -95,6 +103,11 @@ latitude <- c(30, 73)
 # filter
 obs <- obs[obs$longitude>= -20 & obs$longitude<=45,]
 obs <- obs[obs$latitude>= 30 & obs$latitude <= 73,]
+obs <- obs[!is.na(obs$latitude) | !is.na(obs$longitude),]
+not_research <- not_research[not_research$longitude>= -20 & not_research$longitude<=45,]
+not_research <- not_research[not_research$latitude>= 30 & not_research$latitude <= 73,]
+not_research <- not_research[!is.na(not_research$latitude) | !is.na(not_research$longitude),]
+
 ```
 
 
@@ -102,6 +115,7 @@ obs <- obs[obs$latitude>= 30 & obs$latitude <= 73,]
 ## Plot location countries
 coord <-obs[, c("observation_uuid", "latitude", "longitude")]%>%st_as_sf(coords = c("longitude","latitude"),crs = 4326)
 # ggplot()+ geom_sf(data= coord)
+coord_not <-not_research[, c("observation_uuid", "latitude", "longitude")]%>%st_as_sf(coords = c("longitude","latitude"),crs = 4326)
 
 # we should still remove some observations from other regions, we will load the Euro+Med data
 ```
@@ -115,13 +129,16 @@ medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
 # Assign all plots which are within one of the regions to the given region
 sf_use_s2(T) #S2 can provide better performance for certain types of spatial operations, especially when dealing with large spatial datasets.
 joinedData <- st_join(coord, medRegions[-20,], join = st_within)
+joinedData_not <- st_join(coord_not, medRegions[-20,], join = st_within)
 
 # There is something awry with the geometry of the Netherlands, this is why we treat it specially here
 sf_use_s2(F)
 res <- st_join(coord, medRegions[20,], join = st_within)
+res_not<- st_join(coord_not, medRegions[20,], join = st_within)
 # Merge the Netherlands back into the overall data
 # use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
 joinedData[(res$Region == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+joinedData_not[(res_not$Region == "Netherlands") %in% TRUE,] <- res_not[(res_not$Region == "Netherlands") %in% TRUE,]
 sf_use_s2(T)
 ```
 
@@ -139,7 +156,7 @@ europe_regions <- c(
   "Denmark",
   "Estonia",
   "Finland","France",
-  "Georgia","Germany","Greece",
+  "Germany","Greece",
   "Hungary",
   "Iceland","Italy","Ireland",
   "Latvia", "Lithuania","Luxemburg",
@@ -152,17 +169,22 @@ europe_regions <- c(
 
 # give the points without a country their region
 joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+joinedData_not$country[is.na(joinedData_not$country)] <- joinedData_not$Region[is.na(joinedData_not$country)]
 
 # change United Kingdom
 joinedData$country <- gsub("United.Kingdom","United Kingdom",joinedData$country)
 joinedData$country <- gsub("Republic.of.Ireland","Ireland",joinedData$country)
+joinedData_not$country <- gsub("United.Kingdom","United Kingdom",joinedData_not$country)
+joinedData_not$country <- gsub("Republic.of.Ireland","Ireland",joinedData_not$country)
 countries <- unique(joinedData$country)
 
 # check whether the number of countries and regions is the same
 length(is.na(joinedData$country)) == length(is.na(joinedData$Region))
+length(is.na(joinedData_not$country)) == length(is.na(joinedData_not$Region))
 
 # change to Sicily
 joinedData$country[joinedData$country %in% "Italy & Malta"] <- joinedData$Region[joinedData$country %in% "Italy & Malta"]
+joinedData_not$country[joinedData_not$country %in% "Italy & Malta"] <- joinedData_not$Region[joinedData_not$country %in% "Italy & Malta"]
 
 # we will later remove the non-European countries, but first check region
 ```
@@ -200,7 +222,7 @@ if(file.exists("../Extra/Intermediate/Distance_region_iNat.csv")){
                                                     medRegions[medRegions$Region==remainingPlots_small_joined$Region[i]
                                                                &!is.na(medRegions$Region),])}
   # write to csv to be able to use it later
-  write_csv(remainingPlots_small_joined, "../Extra/Intermediate/Distance_region_iNat.csv")
+  #write_csv(remainingPlots_small_joined, "../Extra/Intermediate/Distance_region_iNat_extra.csv")
 }
 
 # give the points without a country their region
@@ -234,10 +256,79 @@ unique(joinedData$country)
 ```
 
 
+
+```{r}
+# which plots are not assigned, many of them are located near the coast
+remainingPlots <- joinedData_not[is.na(joinedData_not$country),]
+# assign all within a 1 km region to that country
+# check countries not assigned
+ggplot()+ geom_sf(data= remainingPlots) 
+
+# Keep only necessary columns
+remainingPlots_small <- remainingPlots[, c("observation_uuid","geometry")]
+
+# assign to country nearest
+remainingPlots_small_joined <- st_join(remainingPlots_small, medRegions[-20,], join= st_nearest_feature)
+# change to planar because the Netherlands varies
+sf_use_s2(F)
+res <- st_join(remainingPlots_small, medRegions[20,], join = st_within)
+# merge back into the data
+remainingPlots_small_joined[(res$country == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+if(file.exists("../Extra/Intermediate/Distance_region_iNat_extra.csv")){
+  remainingPlots_small_joined <- 
+    read_csv("../Extra/Intermediate/Distance_region_iNat_extra.csv", show_col_types = FALSE)
+} else {
+# distance
+  remainingPlots_small_joined$distance <- NA
+  # check whether the European regions are within 1 km
+  for(i in which(is.na(remainingPlots_small_joined$distance))[1] : nrow(remainingPlots_small_joined)){
+    remainingPlots_small_joined$distance[i] <- st_distance(remainingPlots_small_joined[i,], 
+                                                    medRegions[medRegions$Region==remainingPlots_small_joined$Region[i]
+                                                               &!is.na(medRegions$Region),])}
+  # write to csv to be able to use it later
+  #write_csv(remainingPlots_small_joined, "../Extra/Intermediate/Distance_region_iNat_extra.csv")
+}
+
+# give the points without a country their region
+remainingPlots_small_joined$country[is.na(remainingPlots_small_joined$country)] <-
+  remainingPlots_small_joined$Region[is.na(remainingPlots_small_joined$country)]
+
+# remove all distance > 1 km
+remainingPlots_small_joined$country[remainingPlots_small_joined$distance > 1000] <- NA
+remainingPlots_small_joined$Region[remainingPlots_small_joined$distance > 1000] <- NA
+
+
+# assign remaining data to joinedData
+joinedData_not[is.na(joinedData_not$country),1:11] <- remainingPlots_small_joined[, 1:11]
+
+# change United Kingdom
+joinedData_not$country <- gsub("United.Kingdom","United Kingdom",joinedData_not$country)
+joinedData_not$country <- gsub("Republic.of.Ireland","Ireland",joinedData_not$country)
+# change to Sicily
+joinedData_not$country[joinedData_not$country %in% "Italy & Malta"] <- 
+  joinedData_not$Region[joinedData_not$country %in% "Italy & Malta"]
+
+# check whether the number of countries and regions is the same
+length(is.na(joinedData_not$country)) == length(is.na(joinedData_not$Region))
+
+# remove all non-European countries
+nonEU <- joinedData_not[!joinedData_not$country %in% europe_regions, ]
+joinedData_not <- joinedData_not |> filter(country %in% europe_regions)
+unique(joinedData_not$country)
+# check this
+# ggplot()+ geom_sf(data= nonEU) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+```
+
+
+
 ```{r}
 # remove non-European countries
 obs <- obs |> filter(observation_uuid %in% joinedData$observation_uuid)
 obs$Country <- joinedData$country[match(obs$observation_uuid, joinedData$observation_uuid)]
+not_research <- not_research |> filter(observation_uuid %in% joinedData_not$observation_uuid)
+not_research$Country <- joinedData_not$country[match(not_research$observation_uuid, joinedData_not$observation_uuid)]
 ```
 
 
@@ -245,9 +336,13 @@ obs$Country <- joinedData$country[match(obs$observation_uuid, joinedData$observa
 ```{r}
 # an anomaly lower than 1 suggests that it is unlikely for the species to be observed there
 summary(obs$anomaly_score)
+summary(not_research$anomaly_score)
 
 # remove all with observation anomalies lower than 1
-length(obs$observation_uuid[obs$anomaly_score <= 1])
+length(obs$observation_uuid[obs$anomaly_score <= 1 ])
+# add without also to plantnet
+obs_remaining <- obs |> filter(is.na(anomaly_score))
+obs <- obs |> filter(anomaly_score >= 1)
 obs <- obs |> filter(anomaly_score >= 1)
 ```
 
@@ -258,6 +353,7 @@ obs <- obs |> filter(anomaly_score >= 1)
 # load old names from observation
 names <- read_csv("../Data/Names/Names_pollinators_observation.csv", show_col_types = FALSE)
 
+bees_inat <- bees
 # reduce bees data to European occurences
 bees <- bees[bees$taxon_id %in% obs$taxon_id,]
 
@@ -270,6 +366,26 @@ bees$family <- names$family[match(bees$name, names$name)]
 not_bees <- bees[is.na(bees$genus),]
 ```
 
+```{r}
+# reduce bees data to European occurences
+bees_not <- bees_inat[bees_inat$taxon_id %in% not_research$taxon_id,]
+
+# assign 
+bees_not$species <- names$species[match(bees_not$name, names$name)]
+bees_not$genus <- names$genus[match(bees_not$name, names$name)]
+bees_not$family <- names$family[match(bees_not$name, names$name)]
+```
+
+
+```{r}
+# reduce bees data to European occurences
+bees_remaining <- bees_inat[bees_inat$taxon_id %in% obs_remaining$taxon_id,]
+
+# assign 
+bees_remaining$species <- names$species[match(bees_remaining$name, names$name)]
+bees_remaining$genus <- names$genus[match(bees_remaining$name, names$name)]
+bees_remaining$family <- names$family[match(bees_remaining$name, names$name)]
+```
 
 ## 2 Join
 ```{r}
@@ -281,10 +397,633 @@ sum(is.na(obs$genus))
 ```
 
 
+```{r}
+# observation 
+not_research <- left_join(not_research, bees_not, by = c("taxon_id"= "taxon_id"))
+
+# check how many observations we don't know the species of
+sum(is.na(not_research$genus))
+```
+
+```{r}
+# observation 
+obs_remaining <- left_join(obs_remaining, bees_remaining, by = c("taxon_id"= "taxon_id"))
+
+# check how many observations we don't know the species of
+sum(is.na(obs_remaining$genus))
+```
+
+
+
 ## 3 Save
 ```{r}
 # save
 write_csv(obs, "../Data/Observation/iNaturalist_bees.csv")
+write_csv(not_research, "../Data/Observation/iNaturalist_bees_extra.csv")
+write_csv(obs_remaining, "../Data/Observation/iNaturalist_bees_remaining.csv")
+```
+
+
+## 4 Remaining
+```{r}
+# load data
+nat <- read_csv( "../Data/Observation/iNaturalist_bees.csv",show_col_types = FALSE)
+names <- nat |> distinct(name, species, genus, family)
+
+# check against observation
+names_obs <- read_csv("../Data/Names/Names_pollinators_observation.csv", show_col_types = FALSE)
+
+# first assign rank
+names$rank <- names_obs$type[match(names$name, names_obs$name)]
+
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+remaining$species <- names_obs$GBIF[match(remaining$name, names_obs$GBIF)]
+remaining$genus <- names_obs$genus[match(remaining$name, names_obs$GBIF)]
+remaining$family <- names_obs$family[match(remaining$name, names_obs$GBIF)]
+remaining$rank <- "species"
+
+# assign
+names[is.na(names$family),] <- remaining
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+
+# check now against gbif
+gbif <-  name_backbone_checklist(remaining$name)
+
+# check accepted species and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" )) & !is.na(gbif$usageKey), ]
+
+# assign
+remaining$species <- gbif_accepted$species[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$genus <- gbif_accepted$genus[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$family <- gbif_accepted$family[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$rank <- gbif_accepted$rank[match(remaining$name, gbif_accepted$verbatim_name)]
+
+# check remaining in gbif
+gbif_remaining <- gbif[!gbif$canonicalName %in% gbif_accepted$canonicalName,]
+
+
+# assign the rest ourselves
+gbif_accepted <- data.frame(  old = gbif_remaining$verbatim_name,
+  subspecies = c(NA, NA, NA, NA, NA, NA, "Bombus terrestris subsp. xanthopus", rep(NA, 6)),
+  species = c(  NA,  "Coelioxys afra","Andrena danuvia","Eucera chrysopyga","Bombus wurflenii",  "Megachile pilidens",
+    "Bombus terrestris",  rep(NA, 6)  ),
+  rank = c( "Subgenus",  rep("Species", 5), "Subspecies", "Subgenus",rep("Subgenus", 5)),
+  genus = c("Andrena", "Coelioxys", "Andrena", "Eucera",
+    "Bombus", "Megachile", "Bombus",
+    "Amegilla", "Bombus", "Bombus",
+    "Halictus", "Bombus", "Andrena"),
+  family = c(  "Andrenidae", "Megachilidae", "Andrenidae",
+    "Apidae", "Apidae", "Megachilidae",
+    rep("Apidae", 4), "Andrenidae",
+    "Apidae", "Andrenidae"))
+
+# assign
+remaining$genus[is.na(remaining$rank)] <- gbif_accepted$genus[match(remaining$name[is.na(remaining$rank)], gbif_accepted$old)]
+remaining$family[is.na(remaining$rank)] <- gbif_accepted$family[match(remaining$name[is.na(remaining$rank)], gbif_accepted$old)]
+remaining$species[is.na(remaining$rank)] <- gbif_accepted$species[match(remaining$name[is.na(remaining$rank)], gbif_accepted$old)]
+
+remaining$subspecies <-NA
+remaining$subspecies[is.na(remaining$rank)] <- gbif_accepted$subspecies[match(remaining$name[is.na(remaining$rank)], gbif_accepted$old)]
+remaining$rank[is.na(remaining$rank)] <- gbif_accepted$rank[match(remaining$name[is.na(remaining$rank)], gbif_accepted$old)]
+
+# change rank names
+remaining$rank <- paste0(toupper(substr(remaining$rank, 1, 1)), tolower(substring(remaining$rank, 2)))
+
+# assign to names
+names$subspecies <- NA
+names[is.na(names$family),] <- remaining
+
+names$rank <- paste0(toupper(substr(names$rank, 1, 1)), tolower(substring(names$rank, 2)))
+
+# assign final role 
+names$final[names$rank == "Subspecies"] <- names$subspecies[names$rank == "Subspecies"] 
+names$final[names$rank == "Variety"] <- names$name[names$rank == "Variety"]
+names$final[names$rank == "Species"] <- names$species[names$rank == "Species"]
+names$final[names$rank == "Subgenus"] <- names$name[names$rank == "Subgenus"]
+names$final[names$rank == "Genus"] <- names$genus[names$rank == "Genus"]
+names$final[names$rank == "Synonym"] <- names$species[names$rank == "Synonym"]
+
+names$rank[names$rank == "Synonym"] <- "Species"
+
+# assign to nat
+nat$pol <- names$final[match(nat$name, names$name)]
+nat$subspecies <- names$subspecies[match(nat$name, names$name)]
+nat$species <- names$species[match(nat$name, names$name)]
+nat$genus <- names$genus[match(nat$name, names$name)]
+nat$family <- names$family[match(nat$name, names$name)]
+nat$rank <- names$rank[match(nat$name, names$name)]
+
+nat <- nat|> relocate(subspecies, .before = species)
+
+#write_csv(nat, "../Data/Observation/iNaturalist_bees.csv")
+
+```
+
+
+## 5 Remaining extra
+```{r}
+# load data
+nat <- read_csv( "../Data/Observation/iNaturalist_bees_extra.csv",show_col_types = FALSE)
+nat <- not_research
+names <- nat |> distinct(name, species, genus, family)
+
+# check against observation
+names_obs <- read_csv("../Data/Names/Names_pollinators_observation.csv", show_col_types = FALSE)
+
+# first assign rank
+names$rank <- names_obs$type[match(names$name, names_obs$name)]
+
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+remaining$species <- names_obs$GBIF[match(remaining$name, names_obs$GBIF)]
+remaining$genus <- names_obs$genus[match(remaining$name, names_obs$GBIF)]
+remaining$family <- names_obs$family[match(remaining$name, names_obs$GBIF)]
+remaining$rank <- "species"
+
+# assign
+names[is.na(names$family),] <- remaining
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+
+# check now against gbif
+gbif <-  name_backbone_checklist(remaining$name)
+
+# check accepted species and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType =="EXACT" )) & !is.na(gbif$usageKey), ]
+
+# assign
+remaining$species <- gbif_accepted$species[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$genus <- gbif_accepted$genus[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$family <- gbif_accepted$family[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$rank <- gbif_accepted$rank[match(remaining$name, gbif_accepted$verbatim_name)]
+
+
+# check accepted species and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType =="HIGHERRANK" )) & !is.na(gbif$usageKey), ]
+
+change_hr <- data.frame(old = c("Lasioglossum fulvicorne-fratellum", "Trigona", "Biastes"),
+                        new = c("Lasioglossum fulvicorne-fratellum", "Trigona","Biastes"),
+                        rank = c("AGGREGATE", "GENUS", "GENUS"))
+# assign
+remaining$species[is.na(remaining$species)] <- gbif_accepted$species[match(remaining$name[is.na(remaining$species)] , gbif_accepted$verbatim_name)]
+remaining$genus[is.na(remaining$genus)]  <- gbif_accepted$genus[match(remaining$name[is.na(remaining$genus)] , gbif_accepted$verbatim_name)]
+remaining$family[is.na(remaining$family)]  <- gbif_accepted$family[match(remaining$name[is.na(remaining$family)] , gbif_accepted$verbatim_name)]
+remaining$rank[is.na(remaining$rank)]  <- gbif_accepted$rank[match(remaining$name[is.na(remaining$rank)] , gbif_accepted$verbatim_name)]
+
+
+# assign saves
+remaining$species[remaining$name %in% change_hr$old[change_hr$rank != "GENUS"]] <- "Lasioglossum fulvicorne-fratellum"
+remaining$rank[remaining$name %in% change_hr$old[change_hr$rank != "GENUS"]] <- "AGGREGATE"
+
+remaining$genus[remaining$name %in% change_hr$old[change_hr$rank == "GENUS"]] <- c("Biastes","Trigona")
+remaining$family[remaining$name %in% change_hr$old[change_hr$rank == "GENUS"]] <- c("Apidae","Apidae")
+remaining$rank[remaining$name %in% change_hr$old[change_hr$rank == "GENUS"]] <- "GENUS"
+
+
+gbif_accepted <- gbif[((gbif$status == "DOUBTFUL" )) & !is.na(gbif$usageKey), ]
+
+# these are subgenera
+bee_subgenera <- data.frame(
+  old_name = c(
+    "Melandrena","Sphecodogastra","Euceratina","Thoracobombus",
+    "Micrandrena","Chalicodoma","Megabombus","Plastandrena",
+    "Melanosmia","Xanthosarus","Eutricharaea","Monilapis",
+    "Hexataenites","Poecilandrena","Helicosmia","Lepidandrena",
+    "Taeniandrena","Simandrena","Allocoelioxys","Melanobombus",
+    "Hetereucera","Pyrobombus","Pareucera","Notandrena",
+    "Paraanthidium","Paraprosopis","Hoplandrena","Lambdopsis",
+    "Lophanthophora","Spatulariella","Cnemidandrena","Zebramegilla",
+    "Pyganthophora","Margandrena","Leuchalictus","Alpinobombus",
+    "Micramegilla","Foveosmia","Holandrena","Aenandrena",
+    "Anthocopa","Ulandrena","Euandrena","Tytthalictus",
+    "Pseudomegachile","Pyrosmia","Paramegilla","Alcidamea",
+    "Chrysandrena","Dentigera","Brachyandrena","Allosmia",
+    "Koptortosoma","Hemihalictus","Trachandrena","Erythrosmia",
+    "Suandrena","Alpigenobombus","Neoxylocopa","Petalosternon",
+    "Archianthidium"),
+  genus = c(
+    "Andrena","Lasioglossum","Ceratina","Bombus",
+    "Andrena","Megachile","Bombus","Andrena",
+    "Osmia","Megachile","Megachile","Halictus",
+    "Halictus","Andrena","Osmia","Andrena",
+    "Andrena","Andrena","Coelioxys","Bombus",
+    "Eucera","Bombus","Eucera","Andrena",
+    "Trachusa","Hylaeus","Andrena","Hylaeus",
+    "Anthophora","Hylaeus","Andrena","Amegilla",
+    "Anthophora","Andrena","Lasioglossum","Bombus",
+    "Amegilla","Osmia","Andrena","Andrena",
+    "Hoplitis","Andrena","Andrena","Halictus",
+    "Megachile","Osmia","Amegilla","Hoplitis",
+    "Andrena","Hylaeus","Andrena","Osmia",
+    "Xylocopa","Lasioglossum","Andrena","Osmia",
+    "Andrena","Bombus","Xylocopa","Anthophora",
+    "Anthidium" ),
+  family = c(
+    "Andrenidae","Halictidae","Apidae","Apidae",
+    "Andrenidae","Megachilidae","Apidae","Andrenidae",
+    "Megachilidae","Megachilidae","Megachilidae","Halictidae",
+    "Halictidae","Andrenidae","Megachilidae","Andrenidae",
+    "Andrenidae","Andrenidae","Megachilidae","Apidae",
+    "Apidae","Apidae","Apidae","Andrenidae",
+    "Megachilidae","Colletidae","Andrenidae","Colletidae",
+    "Apidae","Colletidae","Andrenidae","Apidae",
+    "Apidae","Andrenidae","Halictidae","Apidae",
+    "Apidae","Megachilidae","Andrenidae","Andrenidae",
+    "Megachilidae","Andrenidae","Andrenidae","Halictidae",
+    "Megachilidae","Megachilidae","Apidae","Megachilidae",
+    "Andrenidae","Colletidae","Andrenidae","Megachilidae",
+    "Apidae","Halictidae","Andrenidae","Megachilidae",
+    "Andrenidae","Apidae","Apidae","Apidae",
+    "Megachilidae"))
+
+# assign
+remaining$subgenus <- NA
+remaining$subgenus[remaining$name %in% bee_subgenera$old_name] <- remaining$name[remaining$name %in% bee_subgenera$old_name]
+remaining$rank[remaining$name %in% bee_subgenera$old_name] <- "SUBGENUS"
+remaining$genus[remaining$name %in% bee_subgenera$old_name] <- bee_subgenera$genus[match(remaining$name[remaining$name %in% bee_subgenera$old_name], 
+                                                                                         bee_subgenera$old_name)]
+remaining$family[remaining$name %in% bee_subgenera$old_name] <- bee_subgenera$family[match(remaining$name[remaining$name %in% bee_subgenera$old_name], 
+                                                                                         bee_subgenera$old_name)]
+
+# assign
+names$subgenus <- NA
+names[is.na(names$family),] <- remaining
+
+# check remaining 
+remaining <- names[is.na(names$family),]
+gbif_accepted <- gbif[gbif$verbatim_name %in% remaining$name,]
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="SYNONYM" & gbif_accepted$matchType=="EXACT",]
+
+# assign
+remaining$species <- gbif_accepted_again$species[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$genus <- gbif_accepted_again$genus[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$family <- gbif_accepted_again$family[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$rank <- gbif_accepted_again$rank[match(remaining$name, gbif_accepted_again$verbatim_name)]
+
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="SYNONYM" & gbif_accepted$matchType=="HIGHERRANK",]
+remaining$genus[is.na(remaining$genus)] <- gbif_accepted_again$genus[match(remaining$name[is.na(remaining$genus)], gbif_accepted_again$verbatim_name)]
+remaining$family[is.na(remaining$family)] <- gbif_accepted_again$family[match(remaining$name[is.na(remaining$family)], gbif_accepted_again$verbatim_name)]
+remaining$subgenus[is.na(remaining$subgenus)] <- gbif_accepted_again$verbatim_name[match(remaining$name[is.na(remaining$subgenus)],
+                                                                                  gbif_accepted_again$verbatim_name)]
+remaining$rank[is.na(remaining$rank) & !is.na(remaining$subgenus)] <- "SUBGENUS"
+
+
+# fuzzy
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="ACCEPTED" & gbif_accepted$matchType=="FUZZY",]
+remaining$species[is.na(remaining$species)] <- gbif_accepted_again$species[match(remaining$name[is.na(remaining$species)],
+                                                                                 gbif_accepted_again$verbatim_name)]
+remaining$genus[is.na(remaining$genus)] <- gbif_accepted_again$genus[match(remaining$name[is.na(remaining$genus)], gbif_accepted_again$verbatim_name)]
+remaining$family[is.na(remaining$family)] <- gbif_accepted_again$family[match(remaining$name[is.na(remaining$family)], gbif_accepted_again$verbatim_name)]
+remaining$rank[is.na(remaining$rank)] <- gbif_accepted_again$rank[match(remaining$name[is.na(remaining$rank)], gbif_accepted_again$verbatim_name)]
+
+
+# assign
+names[is.na(names$family),] <- remaining
+# check remaining 
+remaining <- names[is.na(names$family),]
+
+
+# check whether they are tribes or subfamilies
+remaining$rank[grepl("ni$", remaining$name)] <- "TRIBE"
+remaining$rank[grepl("nae$", remaining$name)] <- "SUBFAMILY"
+
+taxonomy <- data.frame( group = c("Rophitinae","Apinae","Megachilinae","Melectini",
+    "Andreninae","Nomadini","Lithurginae","Xylocopini",
+    "Nomioidinae","Bombini","Nomiinae","Xylocopinae",
+    "Epeolini","Hylaeinae","Colletinae","Andrenini",
+    "Melittinae","Dioxyini","Dasypodaini","Ammobatini",
+    "Euglossini" ),
+  family = c("Halictidae","Apidae","Megachilidae","Apidae",
+    "Andrenidae","Apidae","Megachilidae","Apidae",
+    "Halictidae","Apidae","Halictidae","Apidae",
+    "Apidae","Colletidae","Colletidae","Andrenidae",
+    "Melittidae","Megachilidae","Melittidae","Apidae",
+    "Apidae"))
+
+remaining$family <- taxonomy$family[match(remaining$name, taxonomy$group)]
+
+# assign
+names[is.na(names$family),] <- remaining
+# check remaining 
+remaining <- names[is.na(names$family),]
+writeClipboard(remaining$name)
+
+taxonomy_lookup <- data.frame(
+  taxon = c("Prosopis","Chlorandrena","Pteneucera", "Paracoelioxys","Panurgina","Rozeniana","Panurginina"),
+  genus = c(  "Hylaeus", "Andrena","Eucera", "Coelioxys", NA,"Coelioxys",NA),
+  family = c( "Colletidae","Andrenidae","Apidae", "Megachilidae", "Andrenidae",  "Megachilidae","Andrenidae"),
+  rank = c(  "SUBGENUS", "SUBGENUS", "SUBGENUS", "SUBGENUS", "SUBTRIBE", "SUBGENUS","SUBTRIBE"))
+
+remaining$subgenus[remaining$name %in% taxonomy_lookup$taxon[taxonomy_lookup$rank =="SUBGENUS"] ] <- 
+  taxonomy_lookup$taxon[match(remaining$name, taxonomy_lookup$taxon[taxonomy_lookup$rank =="SUBGENUS"]) &
+                                            taxonomy_lookup$rank =="SUBGENUS"]
+remaining$rank[!is.na(remaining$subgenus)] <- "SUBGENUS"
+remaining$genus[remaining$name %in% taxonomy_lookup$taxon[taxonomy_lookup$rank =="SUBGENUS"] ] <- 
+  taxonomy_lookup$genus[match(remaining$name, taxonomy_lookup$taxon[taxonomy_lookup$rank =="SUBGENUS"]) &
+                                            taxonomy_lookup$rank =="SUBGENUS"]
+remaining$family <- taxonomy_lookup$family[match(remaining$name, taxonomy_lookup$taxon)]
+remaining$rank[is.na(remaining$rank)] <- "SUBTRIBE"
+
+
+# assign
+names[is.na(names$family),] <- remaining
+
+names$rank <- paste0(toupper(substr(names$rank, 1, 1)), tolower(substring(names$rank, 2)))
+
+# assign final role 
+names$final[names$rank == "Subspecies"] <- names$name[names$rank == "Subspecies"] 
+names$final[names$rank == "Variety"] <- names$name[names$rank == "Variety"]
+names$final[names$rank == "Species"] <- names$species[names$rank == "Species"]
+names$final[names$rank == "Subgenus"] <- names$subgenus[names$rank == "Subgenus"]
+names$final[names$rank == "Genus"] <- names$genus[names$rank == "Genus"]
+names$final[names$rank == "Subtribe"] <- names$name[names$rank == "Subtribe"]
+names$final[names$rank == "Tribe"] <- names$name[names$rank == "Tribe"]
+names$final[names$rank == "Subfamily"] <- names$name[names$rank == "Subfamily"]
+names$final[names$rank == "Family"] <- names$family[names$rank == "Family"]
+names$final[names$rank == "Synonym"] <- names$species[names$rank == "Synonym"]
+names$final[names$rank == "Aggregate"] <- names$name[names$rank == "Aggregate"]
+
+names$rank[names$rank == "Synonym"] <- "Species"
+
+names$subspecies[names$rank =="Subspecies"] <- names$name[names$rank =="Subspecies"]
+names$subspecies[names$rank =="Variety"] <- names$name[names$rank =="Variety"]
+
+# assign to nat
+nat$pol <- names$final[match(nat$name, names$name)]
+nat$subspecies <- names$subspecies[match(nat$name, names$name)]
+nat$species <- names$species[match(nat$name, names$name)]
+nat$genus <- names$genus[match(nat$name, names$name)]
+nat$family <- names$family[match(nat$name, names$name)]
+nat$rank <- names$rank[match(nat$name, names$name)]
+
+nat <- nat|> relocate(subspecies, .before = species)
+
+#write_csv(nat, "../Data/Observation/iNaturalist_bees_extra.csv")
+
+```
+
+
+
+
+## 6 Remaining remaining
+```{r}
+# load data
+nat <- read_csv( "../Data/Observation/iNaturalist_bees_remaining.csv",show_col_types = FALSE)
+names <- nat |> distinct(name, species, genus, family)
+
+# check against observation
+names_obs <- read_csv("../Data/Names/Names_pollinators_observation.csv", show_col_types = FALSE)
+
+# first assign rank
+names$rank <- names_obs$type[match(names$name, names_obs$name)]
+
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+remaining$species <- names_obs$GBIF[match(remaining$name, names_obs$GBIF)]
+remaining$genus <- names_obs$genus[match(remaining$name, names_obs$GBIF)]
+remaining$family <- names_obs$family[match(remaining$name, names_obs$GBIF)]
+remaining$rank <- names_obs$type[match(remaining$name, names_obs$GBIF)]
+remaining$subspecies <- names_obs$subspecies[match(remaining$name, names_obs$GBIF)]
+remaining$species[remaining$rank %in% "Subspecies"] <- names_obs$species[match(remaining$name[remaining$rank %in% "Subspecies"], names_obs$GBIF)]
+
+# assign
+names$subspecies <- NA
+names[is.na(names$family),] <- remaining
+# check against gbif additionally
+remaining <- names[is.na(names$family),]
+
+# check now against gbif
+gbif <-  name_backbone_checklist(remaining$name)
+
+# check accepted species and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType =="EXACT" )) & !is.na(gbif$usageKey), ]
+
+# assign
+remaining$species <- gbif_accepted$species[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$genus <- gbif_accepted$genus[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$family <- gbif_accepted$family[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$rank <- gbif_accepted$rank[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$subspecies <- gbif_accepted$canonicalName[match(remaining$name, gbif_accepted$verbatim_name)]
+remaining$subspecies[!remaining$name %in% gbif_accepted$verbatim_name[gbif_accepted$rank=="SUBSPECIES"]] <- NA
+
+
+# check accepted species and species
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType =="HIGHERRANK" & gbif$rank =="SPECIES")) & !is.na(gbif$usageKey), ]
+
+# assign
+remaining$species[is.na(remaining$species)] <- gbif_accepted$species[match(remaining$name[is.na(remaining$species)] , gbif_accepted$verbatim_name)]
+remaining$genus[is.na(remaining$genus)]  <- gbif_accepted$genus[match(remaining$name[is.na(remaining$genus)] , gbif_accepted$verbatim_name)]
+remaining$family[is.na(remaining$family)]  <- gbif_accepted$family[match(remaining$name[is.na(remaining$family)] , gbif_accepted$verbatim_name)]
+remaining$rank[is.na(remaining$rank)]  <- gbif_accepted$rank[match(remaining$name[is.na(remaining$rank)] , gbif_accepted$verbatim_name)]
+
+# check accepted and genera
+gbif_accepted <- gbif[((gbif$status == "ACCEPTED" & gbif$matchType =="HIGHERRANK" & gbif$rank !="SPECIES")) & !is.na(gbif$usageKey), ]
+
+gbif_accepted$genus <- gbif_accepted$verbatim_name
+gbif_accepted$rank <- "GENUS"
+gbif_accepted$genus[6] <- "Pseudapis"
+gbif_accepted$genus[7] <- "Bombus"
+gbif_accepted$species[7] <-  "Bombus lapponicus"
+gbif_accepted$canonicalName[7] <-  "Bombus lapponicus konradini"
+gbif_accepted$rank[7] <- "SUBSPECIES"
+
+# assign
+remaining$species[is.na(remaining$species)] <- gbif_accepted$species[match(remaining$name[is.na(remaining$species)] , gbif_accepted$verbatim_name)]
+remaining$genus[is.na(remaining$genus)]  <- gbif_accepted$genus[match(remaining$name[is.na(remaining$genus)] , gbif_accepted$verbatim_name)]
+remaining$family[is.na(remaining$family)]  <- gbif_accepted$family[match(remaining$name[is.na(remaining$family)] , gbif_accepted$verbatim_name)]
+remaining$rank[is.na(remaining$rank)]  <- gbif_accepted$rank[match(remaining$name[is.na(remaining$rank)] , gbif_accepted$verbatim_name)]
+remaining$subspecies[is.na(remaining$subspecies)]  <- gbif_accepted$canonicalName[match(remaining$name[is.na(remaining$subspecies)] ,
+                                                                                        gbif_accepted$verbatim_name)]
+
+remaining$subspecies[remaining$rank != "SUBSPECIES"] <- NA
+
+# check others
+gbif_accepted <- gbif[((gbif$status == "DOUBTFUL" )) & !is.na(gbif$usageKey), ]
+
+# these are subgenera
+bee_subgenera <- data.frame(
+  old_name = c(
+    "Melandrena","Sphecodogastra","Euceratina","Thoracobombus",
+    "Micrandrena","Chalicodoma","Megabombus","Plastandrena",
+    "Melanosmia","Xanthosarus","Eutricharaea","Monilapis",
+    "Hexataenites","Poecilandrena","Helicosmia","Lepidandrena",
+    "Taeniandrena","Simandrena","Allocoelioxys","Melanobombus",
+    "Hetereucera","Pyrobombus","Pareucera","Notandrena",
+    "Paraanthidium","Paraprosopis","Hoplandrena","Lambdopsis",
+    "Lophanthophora","Spatulariella","Cnemidandrena","Zebramegilla",
+    "Pyganthophora","Margandrena","Leuchalictus","Alpinobombus",
+    "Micramegilla","Foveosmia","Holandrena","Aenandrena",
+    "Anthocopa","Ulandrena","Euandrena","Tytthalictus",
+    "Pseudomegachile","Pyrosmia","Paramegilla","Alcidamea",
+    "Chrysandrena","Dentigera","Brachyandrena","Allosmia",
+    "Koptortosoma","Hemihalictus","Trachandrena","Erythrosmia",
+    "Suandrena","Alpigenobombus","Neoxylocopa","Petalosternon",
+    "Archianthidium"),
+  genus = c(
+    "Andrena","Lasioglossum","Ceratina","Bombus",
+    "Andrena","Megachile","Bombus","Andrena",
+    "Osmia","Megachile","Megachile","Halictus",
+    "Halictus","Andrena","Osmia","Andrena",
+    "Andrena","Andrena","Coelioxys","Bombus",
+    "Eucera","Bombus","Eucera","Andrena",
+    "Trachusa","Hylaeus","Andrena","Hylaeus",
+    "Anthophora","Hylaeus","Andrena","Amegilla",
+    "Anthophora","Andrena","Lasioglossum","Bombus",
+    "Amegilla","Osmia","Andrena","Andrena",
+    "Hoplitis","Andrena","Andrena","Halictus",
+    "Megachile","Osmia","Amegilla","Hoplitis",
+    "Andrena","Hylaeus","Andrena","Osmia",
+    "Xylocopa","Lasioglossum","Andrena","Osmia",
+    "Andrena","Bombus","Xylocopa","Anthophora",
+    "Anthidium" ),
+  family = c(
+    "Andrenidae","Halictidae","Apidae","Apidae",
+    "Andrenidae","Megachilidae","Apidae","Andrenidae",
+    "Megachilidae","Megachilidae","Megachilidae","Halictidae",
+    "Halictidae","Andrenidae","Megachilidae","Andrenidae",
+    "Andrenidae","Andrenidae","Megachilidae","Apidae",
+    "Apidae","Apidae","Apidae","Andrenidae",
+    "Megachilidae","Colletidae","Andrenidae","Colletidae",
+    "Apidae","Colletidae","Andrenidae","Apidae",
+    "Apidae","Andrenidae","Halictidae","Apidae",
+    "Apidae","Megachilidae","Andrenidae","Andrenidae",
+    "Megachilidae","Andrenidae","Andrenidae","Halictidae",
+    "Megachilidae","Megachilidae","Apidae","Megachilidae",
+    "Andrenidae","Colletidae","Andrenidae","Megachilidae",
+    "Apidae","Halictidae","Andrenidae","Megachilidae",
+    "Andrenidae","Apidae","Apidae","Apidae",
+    "Megachilidae"))
+
+# assign
+remaining$subgenus <- NA
+remaining$subgenus[remaining$name %in% bee_subgenera$old_name] <- remaining$name[remaining$name %in% bee_subgenera$old_name]
+remaining$rank[remaining$name %in% bee_subgenera$old_name] <- "SUBGENUS"
+remaining$genus[remaining$name %in% bee_subgenera$old_name] <- bee_subgenera$genus[match(remaining$name[remaining$name %in% bee_subgenera$old_name], 
+                                                                                         bee_subgenera$old_name)]
+remaining$family[remaining$name %in% bee_subgenera$old_name] <- bee_subgenera$family[match(remaining$name[remaining$name %in% bee_subgenera$old_name], 
+                                                                                         bee_subgenera$old_name)]
+
+remaining$family[is.na(remaining$family) & !is.na(remaining$genus)] <- c("Apidae","Halictidae","Melittidae")
+
+# assign
+names$subgenus <- NA
+names[is.na(names$family),] <- remaining
+
+
+# check remaining 
+remaining <- names[is.na(names$family),]
+gbif_accepted <- gbif[gbif$verbatim_name %in% remaining$name,]
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="SYNONYM" & gbif_accepted$matchType=="EXACT",]
+
+# assign
+remaining$species <- gbif_accepted_again$species[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$genus <- gbif_accepted_again$genus[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$family <- gbif_accepted_again$family[match(remaining$name, gbif_accepted_again$verbatim_name)]
+remaining$rank <- "SPECIES"
+
+# check further
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="SYNONYM" & gbif_accepted$matchType=="HIGHERRANK",]
+remaining$subgenus[remaining$name %in% gbif_accepted_again$verbatim_name] <- "Leucandrena"
+remaining$genus[remaining$name %in% gbif_accepted_again$verbatim_name] <- "Andrena"
+remaining$family[remaining$name %in% gbif_accepted_again$verbatim_name] <- "Andrenidae"
+remaining$rank[remaining$name %in% gbif_accepted_again$verbatim_name] <- "SUBGENUS"
+
+
+# fuzzy
+gbif_accepted_again <- gbif_accepted[gbif_accepted$status=="ACCEPTED" & gbif_accepted$matchType=="FUZZY",]
+remaining$species[is.na(remaining$species)] <- gbif_accepted_again$species[match(remaining$name[is.na(remaining$species)],
+                                                                                 gbif_accepted_again$verbatim_name)]
+remaining$genus[is.na(remaining$genus)] <- gbif_accepted_again$genus[match(remaining$name[is.na(remaining$genus)], gbif_accepted_again$verbatim_name)]
+remaining$family[is.na(remaining$family)] <- gbif_accepted_again$family[match(remaining$name[is.na(remaining$family)], gbif_accepted_again$verbatim_name)]
+remaining$rank[is.na(remaining$rank)] <- gbif_accepted_again$rank[match(remaining$name[is.na(remaining$rank)], gbif_accepted_again$verbatim_name)]
+remaining$subspecies[is.na(remaining$subspecies)] <- gbif_accepted_again$canonicalName[match(remaining$name[is.na(remaining$subspecies)],
+                                                                                       gbif_accepted_again$verbatim_name)]
+remaining$subspecies[remaining$subspecies != "Bombus terrestris xanthopus"] <- NA
+remaining$rank[remaining$subspecies == "Bombus terrestris xanthopus"] <- "SUBSPECIES"
+
+# assign
+names[is.na(names$family),] <- remaining
+
+# check remaining 
+remaining <- names[is.na(names$family),]
+
+
+# check whether they are tribes or subfamilies
+remaining$rank[grepl("ni$", remaining$name)] <- "TRIBE"
+remaining$rank[grepl("nae$", remaining$name)] <- "SUBFAMILY"
+
+taxonomy <- data.frame( group = c("Rophitinae","Apinae","Megachilinae","Melectini",
+    "Andreninae","Nomadini","Lithurginae","Xylocopini",
+    "Nomioidinae","Bombini","Nomiinae","Xylocopinae",
+    "Epeolini","Hylaeinae","Colletinae","Andrenini",
+    "Melittinae","Dioxyini","Dasypodaini","Ammobatini",
+    "Euglossini","Halictini","Anthidiini","Osmiini","Halictinae" ),
+  family = c("Halictidae","Apidae","Megachilidae","Apidae",
+    "Andrenidae","Apidae","Megachilidae","Apidae",
+    "Halictidae","Apidae","Halictidae","Apidae",
+    "Apidae","Colletidae","Colletidae","Andrenidae",
+    "Melittidae","Megachilidae","Melittidae","Apidae",
+    "Apidae","Halictidae","Megachilidae","Megachilidae","Halictidae"))
+
+remaining$family <- taxonomy$family[match(remaining$name, taxonomy$group)]
+
+# assign
+names[is.na(names$family),] <- remaining
+# check remaining 
+remaining <- names[is.na(names$family),]
+
+taxonomy_lookup <- data.frame(
+  taxon = c("Stelis minuta","Stelis","Prosopis","Osmia ferruginea"),
+  species = c("Stelis minuta", NA,NA,"Osmia ferruginea" ),
+  genus = c(  "Stelis", "Stelis","Prosopis", "Osmia"),
+  family = c( "Megachilidae","Megachilidae","Colletidae", "Megachilidae"),
+  rank = c(  "SPECIES", "GENUS", "GENUS", "SPECIES"))
+
+remaining$species <- taxonomy_lookup$species[match(remaining$name, taxonomy_lookup$taxon)]
+remaining$genus <- taxonomy_lookup$genus[match(remaining$name, taxonomy_lookup$taxon)]
+remaining$family <- taxonomy_lookup$family[match(remaining$name, taxonomy_lookup$taxon)]
+remaining$rank <- taxonomy_lookup$rank[match(remaining$name, taxonomy_lookup$taxon)]
+
+# assign
+names[is.na(names$family),] <- remaining
+
+names$rank <- paste0(toupper(substr(names$rank, 1, 1)), tolower(substring(names$rank, 2)))
+
+# check aggregate
+names$species[names$rank == "Aggregate"] <- NA
+names$rank[names$rank == "Aggregate"] <- "GENUS"
+
+# assign final role 
+names$final[names$rank == "Subspecies"] <- names$subspecies[names$rank == "Subspecies"] 
+names$final[names$rank == "Species"] <- names$species[names$rank == "Species"]
+names$final[names$rank == "Subgenus"] <- names$subgenus[names$rank == "Subgenus"]
+names$final[names$rank == "Genus"] <- names$genus[names$rank == "Genus"]
+names$final[names$rank == "Subtribe"] <- names$name[names$rank == "Subtribe"]
+names$final[names$rank == "Tribe"] <- names$name[names$rank == "Tribe"]
+names$final[names$rank == "Subfamily"] <- names$name[names$rank == "Subfamily"]
+names$final[names$rank == "Family"] <- names$family[names$rank == "Family"]
+names$final[names$rank == "Synonym"] <- names$species[names$rank == "Synonym"]
+
+
+
+names$rank[names$rank == "Synonym"] <- "Species"
+
+
+# assign to nat
+nat$pol <- names$final[match(nat$name, names$name)]
+nat$subspecies <- names$subspecies[match(nat$name, names$name)]
+nat$species <- names$species[match(nat$name, names$name)]
+nat$genus <- names$genus[match(nat$name, names$name)]
+nat$family <- names$family[match(nat$name, names$name)]
+nat$rank <- names$rank[match(nat$name, names$name)]
+
+nat <- nat|> relocate(subspecies, .before = species)
+
+nat$species[nat$rank == "Genus"] <- NA
+write_csv(nat, "../Data/Observation/iNaturalist_bees_remaining.csv")
+
 ```
 
 
@@ -292,7 +1031,7 @@ write_csv(obs, "../Data/Observation/iNaturalist_bees.csv")
 ## 1 Load
 ```{r}
 # read csv
-obs <- read_csv("../Data/Observation/iNaturalist_bees.csv", show_col_types = FALSE)
+obs <- read_csv("../Data/Observation/iNaturalist_bees_remaining.csv", show_col_types = FALSE)
   
 # connect with duck 
 con <- dbConnect(duckdb::duckdb(), dbdir = "inat.duckdb")
@@ -331,6 +1070,6 @@ obs <- left_join(obs, unique_photos[,2:3])
 sum(is.na(obs$photo_id))
 
 # save
-write_csv(photos,  "../Data/Observation/iNaturalist_photos.csv")
+#write_csv(photos,  "../Data/Observation/iNaturalist_photos_remaining.csv")
 ```
 

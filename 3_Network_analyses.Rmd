@@ -4,19 +4,27 @@ author: "Willem"
 date: "2025-06-18"
 output: html_document
 ---
-# 1 START
+# START
 This is a preliminary analysis, before analysing associated plant species via plantnet
 
 Load
 ```{r}
 library(tidyverse)
+library(ggpubr)
 library(bipartite)
 library(ggridges)
 library(multcomp)
 library(lme4)
 library(lmerTest)
 library(DHARMa)
+library(glmmTMB)
+library(iNEXT)
 library(emmeans)
+library(sf)
+library(sp)
+library(rnetcarto)
+library(ggpubr)
+library(ggExtra)
 ```
 
 Remove all available data
@@ -27,37 +35,1479 @@ rm(list=ls())
 Load in data
 ```{r}
 # load data
-interactions <- read_csv("../Results/Interaction_final.csv", show_col_types = FALSE)
+interactions_all <- read_csv("../Results/Interaction_all.csv", show_col_types = FALSE)
+interactions <- interactions_all
+
+# remove old data
+interactions <- interactions[!interactions$date < "2010-01-01", ]
+
+# remove singletons
+interactions <- interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= 2) |>  ungroup()
 
 # subdivide data 
-fast =T
+fast =F
 if(fast){
   interactions <- interactions[runif(nrow(interactions)) > 0.90,]
 }
 
-# get genus and family data
-interactions$obs_genus[is.na(interactions$obs_genus)] <- interactions$plantnet_genus[is.na(interactions$obs_genus)] 
-interactions$obs_family[is.na(interactions$obs_family)] <- interactions$plantnet_family[is.na(interactions$obs_family)] 
+
 # get specific data only
 interactions <- interactions |> 
-  dplyr::select(id, eco_region, date, name, plant_taxa, euromed_region, plant_rank_final, obs_genus, obs_family, pol_genus, pol_family, pol_rank)
-interactions |> group_by(eco_region) |> summarise(n=n())
+  dplyr::select(id, eco_region, date, name, plant_taxa, euromed_region, plant_genus, plant_family,plant_rank_final, pol_genus, pol_family, 
+                pol_rank, lat, lng)
+interactions |> group_by(eco_region, euromed_region) |> summarise(n=n())
+```
 
+
+```{r}
+# assign native status
+status <- read_csv("../Extra/Names/Interaction_alien_status.csv",show_col_types = FALSE)
+status <- status |>  distinct(plant_taxa, euromed_region, .keep_all = TRUE)
+interactions <- left_join(  interactions, status[, c("plant_taxa", "euromed_region", "statusNew")], by = c("plant_taxa", "euromed_region"))
+colnames(interactions)[15] <- "status"
+
+# check numbers
+table(interactions$status)
+table(status$statusNew)
+
+# check overall percentage
+sum(!is.na(interactions$status))/nrow(interactions)
+sum(!is.na(status$statusNew))/nrow(status)
+
+# only keep those with species classified
+interactions <- interactions[!is.na(interactions$status),]
+
+test <- interactions |> distinct(plant_taxa, status)
+table(test$status)
+```
+
+
+```{r}
 # only keep species level observations for now
 interactions <- interactions[interactions$plant_rank_final=="Species" & interactions$pol_rank== "Species",]
 
 # create interaction matrix
-interaction_matrix <- interactions |> dplyr::count(name, plant_taxa, eco_region) |> tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
+# depends on what you want
+
+# all subdivisions
+interaction_matrix_all<- interactions|>dplyr::count(name, plant_taxa,eco_region, euromed_region, status) |> 
+  tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
+interaction_matrix <- as.data.frame(interaction_matrix_all)
+
+# only status subdivisions
+interaction_matrix_status <- interactions |> dplyr::count(name, plant_taxa, status) |> 
+  tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
+interaction_matrix <- as.data.frame(interaction_matrix_status)
+
+table(interaction_matrix$status)
+```
+
+# 1 SPECIES 
+## 1.1 Calculate relevant metrics
+```{r}
+# calculate all relevant metrics
+mat <- interaction_matrix[, -c(1:2)]
+nL <- nrow(mat)
+nH <- ncol(mat)
+
+
+deg <- specieslevel(mat,"degree")
+ND <- specieslevel(mat,"normalised degree")
+strg <- specieslevel(mat,"species strength")
+
+NSI <- specieslevel(mat,"NSI")
+BC <- specieslevel(as.matrix(mat),"betweenness")
+RR <- specieslevel((mat),"resource range")
+
+number_obs_plant <- interactions |> dplyr::group_by(plant_taxa) |> summarise(n=n())
+number_obs_pol <- interactions |> dplyr::group_by(name) |> summarise(n=n())
+
+# assign
+higher <- data.frame(species=colnames(mat), n=nH,degree=deg$`higher level`,
+                     ND=ND$`higher level`,
+                     strength=strg$`higher level`, NSI=NSI$`higher level`,  
+                     RR = RR$`higher level`,
+                     BC = BC$`higher level`, 
+                     number = number_obs_plant$n[match(colnames(mat),
+                                                       number_obs_pol$name)])
+lower <- data.frame(species= interaction_matrix$plant_taxa, n=nL, degree=deg$`lower level`,
+                    ND=ND$`lower level`, strength=strg$`lower level`, NSI=NSI$`lower level`,
+                    RR = RR$`lower level`, BC = BC$`lower level`,
+                    number = number_obs_plant$n[match(interaction_matrix$plant_taxa, number_obs_plant$plant_taxa)])
+
+# assign status
+lower$status <- interaction_matrix$status
+# assign genera and families
+lower$genus <- interactions$plant_genus[match(lower$species, interactions$plant_taxa)]
+lower$family <- interactions$plant_family[match(lower$species, interactions$plant_taxa)]
+
+lower$node.specialisation.index.NSI[lower$node.specialisation.index.NSI=="NaN"]<- NA
+# check correlations
+cor(lower[!is.na(lower$node.specialisation.index.NSI), 3:10], method="spearman")
+cor(lower[!is.na(lower$node.specialisation.index.NSI), 3:10], method="pearson")
+```
+
+
+## 1.2 Degree
+```{r}
+#  check role degree
+sign_status <- glmer(degree ~ status + (1|family/genus ), lower, family = poisson(link= "log"))
+sign_status <- glmmTMB(degree ~ status + (1|family/genus ), lower, family = nbinom2())
+# should we add number of observations
+#sign_status <- glmmTMB(degree ~ status +  log10(number) + (1|family/genus ), lower, family = nbinom2())
+summary(sign_status)
+plot(simulateResiduals(sign_status))
+
+# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+cld_results
+
+count <- data.frame(table(lower$status))
+count$let <- cld_results$.group[match(count$Var1, cld_results$status)]
+
+degree_status <- ggplot(lower, aes(x= status, y= degree, col = status, fill = status))+
+  geom_violin(scale= "area")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"))+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=2)+
+  theme(legend.position = "none")+
+  ylab("Degree")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  geom_text(data = count, aes(x = Var1, y = max(lower$degree)*1.05, label = let), 
+            inherit.aes = FALSE, hjust = 0.5) +
+  geom_text(data = count, aes(x = Var1, y = max(lower$degree)*1.15, label = paste("n= ", Freq, sep="")), 
+            inherit.aes = FALSE, hjust = 0.5) 
+
+ggsave("../Images/Overall_status_degree.png", degree_status, width= 5, height =3)
+```
+
+
+## 1.3 Resource range
+```{r}
+#  check role degree
+sign_status <- glmmTMB(resource.range ~ status + (1|family/genus ), lower, family = ordbeta())
+summary(sign_status)
+plot(simulateResiduals(sign_status))
+
+# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+cld_results
+
+count <- data.frame(table(lower$status))
+count$let <- cld_results$.group[match(count$Var1, cld_results$status)]
+
+resource_range_status <- ggplot(lower, aes(x= status, y= resource.range, col = status, fill = status))+
+  geom_violin(scale= "area")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"))+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=2)+
+  theme(legend.position = "none")+
+  ylab("Resource range")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  #geom_text(data = count, aes(x = Var1, y = max(lower$resource.range)*1.01, label = let), 
+  #          inherit.aes = FALSE, hjust = 0.5) +
+  geom_text(data = count,aes(x=Var1, y = max(lower$resource.range)*1.03,label =paste("n= ",Freq, sep="")), 
+            inherit.aes = FALSE, hjust = 0.5) 
+
+ggsave("../Images/Overall_status_resource_range.png", resource_range_status, width= 5, height =3)
+```
+
+
+## 1.3 BC
+```{r}
+#  check role degree
+sign_status <- glmmTMB(BC.betweenness ~ status + (1|family/genus ), lower, family = ordbeta())
+summary(sign_status)
+plot(simulateResiduals(sign_status))
+
+# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+#cld_results
+
+count <- data.frame(table(lower$status))
+count$let <- cld_results$.group[match(count$Var1, cld_results$status)]
+
+BC_status <- ggplot(lower, aes(x= status, y= BC.betweenness, col = status, fill = status))+
+  geom_violin(scale= "area")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"))+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=2)+
+  theme(legend.position = "none")+
+  ylab("Betweenness\ncentrality")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  #geom_text(data = count, aes(x = Var1, y = max(lower$BC.betweenness)*1.01, label = let), 
+  #          inherit.aes = FALSE, hjust = 0.5) +
+  geom_text(data = count,aes(x=Var1, y = max(lower$BC.betweenness)*1.05,label =paste("n= ",Freq, sep="")), 
+            inherit.aes = FALSE, hjust = 0.5) 
+
+ggsave("../Images/Overall_status_BC.png", BC_status, width= 5, height =3)
+```
+
+
+
+## 1.4 NSI
+```{r}
+#  check role degree
+sign_status <- glmmTMB(node.specialisation.index.NSI-1 ~ status + (1|family/genus ), lower, 
+                       family = Gamma(link="log"))
+summary(sign_status)
+plot(simulateResiduals(sign_status))
+
+# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+#cld_results
+
+count <- data.frame(table(lower$status))
+count$let <- cld_results$.group[match(count$Var1, cld_results$status)]
+
+NSI_status <- ggplot(lower, aes(x= status, y= node.specialisation.index.NSI , col = status, fill = status))+
+  geom_violin(scale= "area")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"))+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=2)+
+  theme(legend.position = "none")+
+  ylab("Node Specialisation\nIndex")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  geom_text(data = count, aes(x = Var1, y = max(lower$node.specialisation.index.NSI, na.rm =T)*1.05, 
+                              label = let), inherit.aes = FALSE, hjust = 0.5) +
+  geom_text(data = count,aes(x=Var1, y = max(lower$node.specialisation.index.NSI, na.rm=T)*1.10,
+                             label =paste("n= ",Freq, sep="")), inherit.aes = FALSE, hjust = 0.5) 
+
+ggsave("../Images/Overall_status_NSI.png", NSI_status, width= 5, height =3)
+```
+
+
+## 1.5 Strength
+```{r}
+#  check role degree
+sign_status <- glmmTMB(log(species.strength)~ status + (1|family/genus ), lower, family = gaussian())
+summary(sign_status)
+plot(simulateResiduals(sign_status))
+
+# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+#cld_results
+
+count <- data.frame(table(lower$status))
+count$let <- cld_results$.group[match(count$Var1, cld_results$status)]
+
+strength_status <- ggplot(lower, aes(x= status, y= log(species.strength) , col = status, fill = status))+
+  geom_violin(scale= "area")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"))+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=2)+
+  theme(legend.position = "none")+
+  ylab("Log species strength")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  geom_text(data = count, aes(x = Var1, y = max(log(lower$species.strength), na.rm =T)*1.15, 
+                              label = let), inherit.aes = FALSE, hjust = 0.5) +
+  geom_text(data = count,aes(x=Var1, y = max(log(lower$species.strength), na.rm=T)*1.50,
+                             label =paste("n= ",Freq, sep="")), inherit.aes = FALSE, hjust = 0.5) 
+
+ggsave("../Images/Overall_status_strength.png", strength_status, width= 5, height =3)
+```
+
+
+
+```{r}
+# combine
+p <- ggpubr::ggarrange(degree_status, strength_status, BC_status, NSI_status, ncol= 2, nrow= 2, 
+               labels= letters[1:4], align= "hv")
+
+ggsave("../Images/Overall_status.svg", p, width= 7, height =5)
+```
+
+
+# 2 RE
+## 2.1 ALL
+```{r}
+interact_long <- interactions[,c(4:5,15)]
+interact_long <- interact_long |> group_by(plant_taxa, name, status) |> summarise(n=n(), .groups = "drop")
+
+interact_list_status <- list(native = interact_long |> filter(status == "native") |> pull(n),
+                             intra  = interact_long |> filter(status == "intra")  |> pull(n),
+                             extra  = interact_long |> filter(status == "extra")  |> pull(n))
+view(interact_list_status$intra, n=1500)
+RE <- iNEXT(interact_list_status, q =0, datatype = "abundance" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_overall_status.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_overall_status.Rdata")
+
+cols <- c("extra"  = "#F07167","intra"  = "#7CAE00","native" = "#00A9A5")
+RE_int <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of observed interactions")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native")) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  scale_shape(labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0,1*10^5, 2*10^5, 3*10^5, 4*10^5),
+                     labels= c("0",expression(1 %*% 10^5),expression(2 %*% 10^5),expression(3 %*% 10^5), expression(4 %*% 10^5)))+
+  ylab("Unique interactions")+
+  theme(legend.position = "right")
+
+ggsave("../Images/Rarefaction_overall_status.png", RE_int, width= 6, height=3)
+
+```
+
+```{r}
+interact_long <- interactions[,c(5,15)]
+interact_long <- interact_long |> group_by(plant_taxa, status) |> summarise(n=n(), .groups = "drop")
+
+interact_list_status <- list(native = interact_long |> filter(status == "native") |> pull(n),
+                             intra  = interact_long |> filter(status == "intra")  |> pull(n),
+                             extra  = interact_long |> filter(status == "extra")  |> pull(n))
+
+RE <- iNEXT(interact_list_status, q =0, datatype = "abundance" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_plant_status_plant.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_plant_status_plant.Rdata")
+cols <- c("extra"  = "#F07167","intra"  = "#7CAE00","native" = "#00A9A5")
+RE_plant <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of observed interactions")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native")) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  scale_shape(labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0,1*10^5, 2*10^5, 3*10^5, 4*10^5),
+                     labels= c("0",expression(1%*%10^5),expression(2%*%10^5),expression(3%*%10^5), expression(4%*%10^5)))+
+  ylab("Unique plant species")+
+  theme(legend.position = "right")
+
+ggsave("../Images/Rarefaction_overall_status_plant.png", RE_plant, width= 6, height=3)
+```
+
+```{r}
+interact_long <- interactions[,c(4,15)]
+interact_long <- interact_long |> group_by(name) |> summarise(n=n(), .groups = "drop")
+
+interact_list_status <- list(pol = interact_long  |> pull(n))
+
+RE <- iNEXT(interact_list_status, q =0, datatype = "abundance" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_overall_status_bee.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_overall_status_bee.Rdata")
+
+RE_bee <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of observed interactions")+
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0,1*10^5, 2*10^5, 3*10^5, 4*10^5),
+                     labels= c("0",expression(1 %*% 10^5),expression(2 %*% 10^5),expression(3 %*% 10^5), expression(4 %*% 10^5)))+
+  ylab("Unique bee species")+
+  theme(legend.position = "none")+
+  guides( colour = "none",shape  = "none",fill= "none")
+
+ggsave("../Images/Rarefaction_overall_status_bee.png", RE_bee, width= 6, height=3)
+```
+
+
+```{r}
+RE_plant <- RE_plant + 
+  theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0, 2*10^5, 4*10^5),
+                     labels= c("0",expression(2%*%10^5), expression(4%*%10^5)))
+RE_bee   <- RE_bee   + theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0, 2*10^5, 4*10^5),
+                     labels= c("0",expression(2%*%10^5), expression(4%*%10^5)))
+RE_int   <- RE_int   + theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(limits= c(0, 4.5*10^5),
+                     breaks = c(0, 2*10^5, 4*10^5),
+                     labels= c("0",expression(2%*%10^5), expression(4%*%10^5)))
+
+p <- ggarrange(RE_plant, RE_bee, RE_int, ncol=3, nrow=1, labels = letters[1:3], align= "hv", common.legend = T,
+               legend ="top")
+p <- annotate_figure( p, bottom = text_grob("Number of observed interactions"))
+p
+ggsave("../Images/Rarefaction_overall_status_all.png", p, width= 8, height=4)
+```
+
+
+## 2.2 Grid
+```{r}
+# make regions
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# make coordinates
+coord <- interactions |> dplyr::select("name","plant_taxa", "status","lat", "lng")
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+grid <- st_make_grid(medRegions, cellsize = 1, square = TRUE) %>% st_sf()
+grid$name_grid <- 1:nrow(grid)
+
+# group
+grid_counts <- st_join(coord, grid, join = st_intersects) 
+```
+
+```{r}
+# make interaction column
+grid_counts <- grid_counts |>  mutate(interaction = paste(plant_taxa, name, sep = "_"))
+# group per region and status level
+grid_counts_int <- grid_counts |> group_by(interaction, status, name_grid) |> summarise(n=n())
+# remove geometry, necessary to calculate later
+grid_counts_int <- grid_counts_int |> st_drop_geometry()
+
+# filter and make list of matrices
+grid_list_status <- list(native = grid_counts_int |> filter(status == "native") |> 
+                           tidyr::pivot_wider(names_from = interaction, values_from = n,
+                                              values_fill = 0),
+                         intra  = grid_counts_int |> filter(status == "intra")  |> 
+                           tidyr::pivot_wider(names_from = interaction, values_from = n,
+                                              values_fill = 0),
+                         extra  = grid_counts_int |> filter(status == "extra")  |> 
+                           tidyr::pivot_wider(names_from = interaction, values_from = n,
+                                              values_fill = 0))
+
+# remove unneccessary columns
+grid_list_status_mat <- list(native = (grid_list_status[[1]][,-c(1:2)]),
+                         intra = (grid_list_status[[2]][,-c(1:2)]),
+                         extra = (grid_list_status[[3]][,-c(1:2)]))
+
+# make binary
+grid_list_status_mat_binary <- lapply(
+  grid_list_status_mat, function(x) { 
+    x[x > 0] <- 1
+    x
+  }
+)
+
+# transpose datafram
+grid_list_status_mat_binary <- list(native = as.data.frame(t(grid_list_status_mat_binary$native)),
+                                    intra = as.data.frame(t(grid_list_status_mat_binary$intra)),
+                                    extra = as.data.frame(t(grid_list_status_mat_binary$extra)))
+
+
+# calculate RE
+RE <-  iNEXT((grid_list_status_mat_binary), q =0, datatype = "incidence_raw" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_grid_status.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_grid_status.Rdata")
+
+# assign colours again
+cols <- c("extra"  = "#F07167","intra"  = "#7CAE00","native" = "#00A9A5")
+
+# calculate
+RE_int_grid <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of grid cells")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",
+                                               intra  = "Intra-European", native = "Native")) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European",
+                                              native = "Native"))+
+  scale_shape(labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  ylab("Unique interactions")+
+  theme(legend.position = "right")
+
+# save
+ggsave("../Images/Rarefaction_grid_status.png", RE_int_grid, width= 6, height=3)
+```
+
+
+```{r}
+# create interaction accumulation curve
+sp_native <- specaccum(as.data.frame(grid_list_status_mat$native), method = "random")
+sp_intra <- specaccum(as.data.frame(grid_list_status_mat$intra), method = "random")
+sp_extra <- specaccum(as.data.frame(grid_list_status_mat$extra), method = "random")
+
+# make it a data frame for plotting
+accum_to_df <- function(x, status){data.frame(sites = x$sites,richness = x$richness,sd = x$sd,status = status )}
+# apply function
+df_accum <- bind_rows(accum_to_df(sp_native, "native"), accum_to_df(sp_intra,  "intra"),accum_to_df(sp_extra,  "extra"))
+
+# get accumulation curve
+ACC_all <- ggplot(df_accum, aes(x = sites, y = richness, colour = status, fill = status)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = richness - sd,
+                  ymax = richness + sd),
+              alpha = 0.2,
+              colour = NA) +
+  ggpubr::theme_pubr() +
+  labs(x = "Number of grid cells",
+       y = "Accumulated unique interactions")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native")) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  theme(legend.position = "right")
+```
+
+
+```{r}
+# group per region and status level
+grid_counts_int <- grid_counts |> group_by(plant_taxa, status, name_grid) |> summarise(n=n())
+# remove geometry, necessary to calculate later
+grid_counts_int <- grid_counts_int |> st_drop_geometry()
+
+# filter and make list of matrices
+grid_list_status <- list(native = grid_counts_int |> filter(status == "native") |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0),
+                         intra  = grid_counts_int |> filter(status == "intra")  |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0),
+                         extra  = grid_counts_int |> filter(status == "extra")  |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0))
+
+# remove unneccessary columns
+grid_list_status_mat <- list(native = (grid_list_status[[1]][,-c(1:2)]),
+                         intra = (grid_list_status[[2]][,-c(1:2)]),
+                         extra = (grid_list_status[[3]][,-c(1:2)]))
+
+# make binary
+grid_list_status_mat_binary <- lapply(
+  grid_list_status_mat, function(x) { 
+    x[x > 0] <- 1
+    x
+  }
+)
+
+# transpose datafram
+grid_list_status_mat_binary <- list(native = as.data.frame(t(grid_list_status_mat_binary$native)),
+                                    intra = as.data.frame(t(grid_list_status_mat_binary$intra)),
+                                    extra = as.data.frame(t(grid_list_status_mat_binary$extra)))
+
+
+# calculate RE
+RE <-  iNEXT((grid_list_status_mat_binary), q =0, datatype = "incidence_raw" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_grid_status_plant.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_grid_status_plant.Rdata")
+
+
+# assign colours again
+cols <- c("extra"  = "#F07167","intra"  = "#7CAE00","native" = "#00A9A5")
+
+# calculate
+RE_plant_grid <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of grid cells")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",
+                                               intra  = "Intra-European", native = "Native")) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European",
+                                              native = "Native"))+
+  scale_shape(labels = c(extra  = "Extra-European",intra  = "Intra-European", native = "Native"))+
+  ylab("Unique plant species")+
+  theme(legend.position = "right")
+
+# save
+ggsave("../Images/Rarefaction_grid_status_plant.png", RE_plant_grid, width= 6, height=3)
+```
+
+
+```{r}
+# group per region and status level
+grid_counts_int <- grid_counts |> group_by(name, name_grid) |> summarise(n=n())
+# remove geometry, necessary to calculate later
+grid_counts_int <- grid_counts_int |> st_drop_geometry()
+
+# filter and make list of matrices
+grid_list_status <- list(native = grid_counts_int |>
+                           tidyr::pivot_wider(names_from = name, values_from = n,
+                                              values_fill = 0))
+
+# remove unneccessary columns
+grid_list_status_mat <- list(native = (grid_list_status[[1]][,-c(1)]))
+
+# make binary
+grid_list_status_mat_binary <- lapply(
+  grid_list_status_mat, function(x) { 
+    x[x > 0] <- 1
+    x
+  }
+)
+
+# transpose datafram
+grid_list_status_mat_binary <- list(native = as.data.frame(t(grid_list_status_mat_binary$native)))
+
+
+# calculate RE
+RE <-  iNEXT((grid_list_status_mat_binary), q =0, datatype = "incidence_raw" )
+#write_rds(RE, "../Extra/Intermediate/Rarefaction_accumulation_grid_status_bee.Rdata")
+RE <- read_rds("../Extra/Intermediate/Rarefaction_accumulation_grid_status_bee.Rdata")
+
+
+# calculate
+RE_bee_grid <- ggiNEXT(RE)+
+  ggpubr::theme_pubr()+
+  xlab("Number of grid cells")+
+  ylab("Unique bee species")+
+  theme(legend.position = "right")+
+  guides( colour = "none",shape  = "none",fill= "none")
+
+# save
+ggsave("../Images/Rarefaction_grid_status_bee.png", RE_int_grid, width= 6, height=3)
+```
+
+
+```{r}
+RE_plant_grid <- RE_plant_grid + 
+  theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(breaks = c(0, 500, 1000))
+RE_bee_grid   <- RE_bee_grid   + 
+  theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(breaks = c(0, 500, 1000))
+RE_int_grid   <- RE_int_grid   + 
+  theme(axis.title.x = element_blank())+ 
+  scale_x_continuous(breaks = c(0, 500, 1000))
+
+p <- ggpubr::ggarrange(RE_plant_grid, RE_bee_grid, RE_int_grid, ncol=3, nrow=1, labels = letters[1:3], align= "hv", common.legend = T,
+               legend ="top")
+p <- ggpubr::annotate_figure( p, bottom = text_grob("Number of grid cells"))
+p
+ggsave("../Images/Rarefaction_grid_status_all.png", p, width= 8, height=4)
+```
+
+
+
+## 2.3 Accumulate
+```{r}
+# make interaction column
+interactions_long <- interactions |> dplyr::select(id, plant_taxa, name, status)
+interactions_long <- interactions_long |>  mutate(interaction = paste(plant_taxa, name, sep = "_"))
+interactions_long <- interactions_long |>  group_by(id, interaction, status, ) |>  summarise(n=n())
+
+# filter and make list of matrices
+grid_list_status <- list(native = interactions_long |> filter(status == "native") |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0),
+                         intra  = interactions_long |> filter(status == "intra")  |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0),
+                         extra  = interactions_long |> filter(status == "extra")  |> 
+                           tidyr::pivot_wider(names_from = plant_taxa, values_from = n,
+                                              values_fill = 0))
+
+# remove unneccessary columns
+grid_list_status_mat <- list(native = (grid_list_status[[1]][,-c(1:2)]),
+                         intra = (grid_list_status[[2]][,-c(1:2)]),
+                         extra = (grid_list_status[[3]][,-c(1:2)]))
+
+# create interaction accumulation curve
+sp_native <- specaccum(as.data.frame(grid_list_status_mat$native), method = "random")
+sp_intra <- specaccum(as.data.frame(grid_list_status_mat$intra), method = "random")
+sp_extra <- specaccum(as.data.frame(grid_list_status_mat$extra), method = "random")
+
+# make it a data frame for plotting
+accum_to_df <- function(x, status){data.frame(sites = x$sites,richness = x$richness,sd = x$sd,status = status )}
+# apply function
+df_accum <- bind_rows(accum_to_df(sp_native, "native"), accum_to_df(sp_intra,  "intra"),accum_to_df(sp_extra,  "extra"))
+df_accum <- bind_rows(accum_to_df(sp_intra,  "intra"),accum_to_df(sp_extra,  "extra"))
+
+# get accumulation curve
+ACC_all <- ggplot(df_accum, aes(x = sites, y = richness, colour = status, fill = status)) +
+  geom_line(linewidth = 1) +
+  geom_ribbon(aes(ymin = richness - sd,
+                  ymax = richness + sd),
+              alpha = 0.2,
+              colour = NA) +
+  ggpubr::theme_pubr() +
+  labs(x = "Number of grid cells",
+       y = "Accumulated unique interactions")+
+  scale_color_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European"
+                                               #, native = "Native"
+                                               )) +
+  scale_fill_manual(values = cols, labels = c(extra  = "Extra-European",intra  = "Intra-European"
+                                              #, native = "Native"
+                                              ))+
+  theme(legend.position = "right")+
+  scale_x_continuous(trans='log10') + annotation_logticks(sides = "b")
+
+# save
+ggsave("../Images/Accumulation_interactions_intra_extra.png", ACC_all, width= 6, height=3)
+```
+
+
+# 3 NETWORK
+## 3.1 Metrics
+```{r}
+# check network characteristics
+all <- networklevel(interaction_matrix[,-c(1:2)], index = c("connectance","NODF"))
+all
+# check by removing all alien species
+nat <-  networklevel(interaction_matrix[interaction_matrix$status=="native",-c(1:2)], index = c("connectance","NODF"))
+nat
+# check by removing extra
+nat_intra <-  networklevel(interaction_matrix[interaction_matrix$status!="extra",-c(1:2)], index = c("connectance","NODF"))
+nat_intra
+# check by removing intra
+nat_extra <-  networklevel(interaction_matrix[interaction_matrix$status!="intra",-c(1:2)], index = c("connectance","NODF"))
+nat_extra
+```
+
+## 3.2 Connectance
+```{r}
+# here calculate for removing all aliens
+
+# create empty dataframe
+data <- data.frame(nat= numeric(), all =numeric())
+for(i in 1:1000){
+  # select only the native
+  nat <- interaction_matrix|> filter(status== "native") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- interaction_matrix[sample.int(nrow(interaction_matrix), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data[i,] = data.frame(nat =  networklevel(nat, index ="connectance"), 
+                        all = networklevel(all, index ="connectance" ))
+}
+
+# make data frame which facilites plotting and calculation of significance
+data_long_all <- data |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "connectance")
+data_long_all$type <- "nat"
+
+
+# plot
+ggplot(data_long_all, aes(x = connectance, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("Connectance")+
+  theme(legend.position = "right")
+
+
+# check significance
+test <- wilcox.test(connectance  ~ network, data_long_all)
+if(test$p.value < 0.05) {
+  means <- data_long_all |> group_by(network) |> summarise(mean = mean(connectance))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_all$letters <- means$letter[match(data_long_all$network, means$network)]
+}
+
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+```{r}
+# here calculate for removing all aliens
+
+# create empty dataframe
+data_intra <- data.frame(nat= numeric(), all =numeric())
+for(i in 1:1000){
+  mat <- interaction_matrix|> filter(status!= "extra") 
+  # select only the native
+  nat <- mat|> filter(status== "native") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- mat[sample.int(nrow(mat), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data_intra[i,] = data.frame(nat =  networklevel(nat, index ="connectance"), 
+                        all = networklevel(all, index ="connectance" ))
+}
+
+# make data frame which facilites plotting and calculation of significance
+data_long_intra <- data_intra |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "connectance")
+data_long_intra$type <- "nat_intra"
+
+# plot
+ggplot(data_long_intra, aes(x = connectance, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("Connectance")+
+  theme(legend.position = "right")
+
+# check significance
+test <- wilcox.test(connectance  ~ network, data_long_intra)
+if(test$p.value < 0.05) {
+  means <- data_long_intra |> group_by(network) |> summarise(mean = mean(connectance))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_intra$letters <- means$letter[match(data_long_intra$network, means$network)]
+}
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+```{r}
+# here calculate for removing all aliens
+
+# create empty dataframe
+data_extra <- data.frame(nat= numeric(), all =numeric())
+for(i in 1:1000){
+  mat <- interaction_matrix
+  # select only the native
+  nat <- mat|> filter(status!= "extra") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- mat[sample.int(nrow(mat), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data_extra[i,] = data.frame(nat =  networklevel(nat, index ="connectance"), 
+                        all = networklevel(all, index ="connectance" ))
+}
+
+# make data frame which facilites plotting and calculation of significance
+data_long_extra <- data_extra |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "connectance")
+data_long_extra$type <- "nat_extra"
+
+# plot
+ggplot(data_long_extra, aes(x = connectance, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("Connectance")+
+  theme(legend.position = "right")
+
+# check significance
+# check significance
+test <- wilcox.test(connectance  ~ network, data_long_extra)
+if(test$p.value < 0.05) {
+  means <- data_long_all |> group_by(network) |> summarise(mean = mean(connectance))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_extra$letters <- means$letter[match(data_long_extra$network, means$network)]
+}
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+
+
+```{r}
+data_long <- rbind(data_long_all, data_long_intra, data_long_extra)
+
+# add spacers
+spacers <- tibble( network   = NA,  connectance = NA, type = c("Spacer1", "Spacer2"))
+plot_data <- bind_rows(data_long, spacers)
+
+# add to order
+order_levels <- c("nat_nat", "all_nat","NA_Spacer1" ,"nat_nat_extra","all_nat_extra",
+                  "NA_Spacer2", "nat_nat_intra", "all_nat_intra") 
+plot_data$combined <- paste(plot_data$network, plot_data$type, sep= "_")
+
+# change order
+plot_data$combined <- as.character(plot_data$combined)
+# set reversed order
+plot_data$combined <- factor(plot_data$combined,levels = rev(order_levels))
+plot_data$names <- plot_data$combined
+
+change_labels <-c("nat_nat"= "Only natives",
+                  "all_nat"= "All species",
+                  "NA_Spacer1"="" ,
+                  "nat_nat_extra"= "Natives and\nIntra-European aliens",
+                  "all_nat_extra"= "All species",
+                  "NA_Spacer2"="", 
+                  "nat_nat_intra"= "Only natives", 
+                  "all_nat_intra"="Natives and\nIntra-European aliens")
+
+levels(plot_data$names) <- change_labels[levels(plot_data$names)]
+plot_labels <- plot_data[!duplicated(plot_data$combined),4:5]
+
+cols_network <- c(
+  "Only natives"                        = "#0072B2",  # deep blue
+  "Natives and\nIntra-European aliens"   = "#CC79A7",  # magenta
+  "All species"                         = "#E69F00"   # amber
+)
+
+# plot data
+plot_con <- ggplot(plot_data, aes(x= connectance, y= combined, fill= names))+
+  stat_density_ridges(alpha = 0.8, rel_min_height = 0.01, scale = 1.2,
+                      quantile_lines = TRUE, quantile_fun = mean, na.rm = TRUE)+
+  theme_ridges() +
+  theme_pubr() +
+  scale_y_discrete(labels = change_labels)+
+  geom_text(data = plot_labels, aes(x = max(plot_data$connectance, na.rm = TRUE), 
+                                    y = combined, label = letters),inherit.aes = FALSE,
+             hjust = 0,size = 4 )+
+  theme(legend.position = "none", axis.title.y = element_blank(), axis.title.x = element_text(size = 14),
+        axis.text.y  = element_text(size = 12), axis.text.x  = element_text(size = 12), axis.ticks.y = element_blank() ) +
+  xlab("Connectance")+
+  scale_y_discrete(labels = change_labels)+
+  scale_fill_manual(values = cols_network)
+
+ggsave("../Images/Connectance_overall_status.png", plot_con, width =6, height=4)
+```
+
+## 3.3 NODF
+```{r}
+# here calculate for removing all aliens
+i=1
+# create empty dataframe
+data <- data.frame(nat= numeric(), all =numeric())
+for(i in 1:50){
+  # select only the native
+  nat <- interaction_matrix|> filter(status== "native") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- interaction_matrix[sample.int(nrow(interaction_matrix), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data[i,] = data.frame(nat =  networklevel(nat, index ="NODF"), 
+                        all = networklevel(all, index ="NODF" ))
+}
+
+table(interaction_matrix$status)
+
+# make data frame which facilites plotting and calculation of significance
+data_long_all <- data |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "NODF")
+data_long_all$type <- "nat"
+
+
+# plot
+ggplot(data_long_all, aes(x = NODF, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("NODF")+
+  theme(legend.position = "right")
+
+
+# check significance
+test <- wilcox.test(NODF  ~ network, data_long_all)
+if(test$p.value < 0.05) {
+  means <- data_long_all |> group_by(network) |> summarise(mean = mean(NODF))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_all$letters <- means$letter[match(data_long_all$network, means$network)]
+}
+
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+```{r}
+# here calculate for removing all aliens
+
+# create empty dataframe
+data_intra <- data.frame(nat= numeric(), all =numeric())
+for(i in 16:50){
+  mat <- interaction_matrix|> filter(status!= "extra") 
+  # select only the native
+  nat <- mat|> filter(status== "native") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- mat[sample.int(nrow(mat), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data_intra[i,] = data.frame(nat =  networklevel(nat, index ="NODF"), 
+                        all = networklevel(all, index ="NODF" ))
+}
+
+# make data frame which facilites plotting and calculation of significance
+data_long_intra <- data_intra |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "NODF")
+data_long_intra$type <- "nat_intra"
+
+# plot
+ggplot(data_long_intra, aes(x = NODF, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("NODF")+
+  theme(legend.position = "right")
+
+# check significance
+test <- wilcox.test(NODF  ~ network, data_long_intra)
+if(test$p.value < 0.05) {
+  means <- data_long_intra |> group_by(network) |> summarise(mean = mean(NODF))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_intra$letters <- means$letter[match(data_long_intra$network, means$network)]
+}
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+```{r}
+# here calculate for removing all aliens
+
+# create empty dataframe
+data_extra <- data.frame(nat= numeric(), all =numeric())
+for(i in 1:50){
+  mat <- interaction_matrix
+  # select only the native
+  nat <- mat|> filter(status!= "extra") 
+  # remove first two columns and the columns in which the colsum is 0
+  nat <- nat[, -c(1:2)]
+  nat <- nat[, colSums(nat)>0]
+  # get dimension
+  remove <- dim(nat)[1]
+  # randomly sample exactly the same number of rows as were present before
+  all <- mat[sample.int(nrow(mat), remove), -c(1:2)]
+  # remove columns with colsum equal to 0
+  all <- all[, colSums(all)>0]
+  # get the minimum number of columns
+  n_col <- min(ncol(nat), ncol(all))*0.9
+  # sample both datasets again (number of plants is already equal, but number of bees varies)
+  nat <- nat[, sample.int(ncol( nat), n_col)]
+  all <- all[, sample.int(ncol( all), n_col)]
+  # assign to the database
+  data_extra[i,] = data.frame(nat =  networklevel(nat, index ="NODF"), 
+                        all = networklevel(all, index ="NODF" ))
+}
+
+# make data frame which facilites plotting and calculation of significance
+data_long_extra <- data_extra |>  pivot_longer(cols = c(nat, all),
+               names_to = "network",
+               values_to = "NODF")
+data_long_extra$type <- "nat_extra"
+
+# plot
+ggplot(data_long_extra, aes(x = NODF, fill= network)) +
+  geom_histogram(position = "identity", alpha= 1) +
+  theme_pubr() +
+  xlab("NODF")+
+  theme(legend.position = "right")
+
+# check significance
+# check significance
+test <- wilcox.test(NODF  ~ network, data_long_extra)
+if(test$p.value < 0.05) {
+  means <- data_long_all |> group_by(network) |> summarise(mean = mean(NODF))|> 
+    mutate(letter = ifelse(mean== max(mean), "a","b")) 
+  data_long_extra$letters <- means$letter[match(data_long_extra$network, means$network)]
+}
+# significantly higher = more connected = higher number of interactions for dimension
+```
+
+
+
+```{r}
+data_long <- rbind(data_long_all, data_long_intra, data_long_extra)
+
+# add spacers
+spacers <- tibble( network   = NA,  NODF = NA, type = c("Spacer1", "Spacer2"))
+plot_data <- bind_rows(data_long, spacers)
+
+# add to order
+order_levels <- c("nat_nat", "all_nat","NA_Spacer1" ,"nat_nat_extra","all_nat_extra",
+                  "NA_Spacer2", "nat_nat_intra", "all_nat_intra") 
+plot_data$combined <- paste(plot_data$network, plot_data$type, sep= "_")
+
+# change order
+plot_data$combined <- as.character(plot_data$combined)
+# set reversed order
+plot_data$combined <- factor(plot_data$combined,levels = rev(order_levels))
+plot_data$names <- plot_data$combined
+
+change_labels <-c("nat_nat"= "Only natives",
+                  "all_nat"= "All species",
+                  "NA_Spacer1"="" ,
+                  "nat_nat_extra"= "Natives and\nIntra-European aliens",
+                  "all_nat_extra"= "All species",
+                  "NA_Spacer2"="", 
+                  "nat_nat_intra"= "Only natives", 
+                  "all_nat_intra"="Natives and\nIntra-European aliens")
+
+levels(plot_data$names) <- change_labels[levels(plot_data$names)]
+plot_labels <- plot_data[!duplicated(plot_data$combined),4:5]
+
+cols_network <- c(
+  "Only natives"                        = "#0072B2",  # deep blue
+  "Natives and\nIntra-European aliens"   = "#CC79A7",  # magenta
+  "All species"                         = "#E69F00"   # amber
+)
+
+# plot data
+plot_NODF <- ggplot(plot_data, aes(x= NODF, y= combined, fill= names))+
+  stat_density_ridges(alpha = 0.8, rel_min_height = 0.01, scale = 1.2,
+                      quantile_lines = TRUE, quantile_fun = mean, na.rm = TRUE)+
+  theme_ridges() +
+  theme_pubr() +
+  scale_y_discrete(labels = change_labels)+
+  geom_text(data = plot_labels, aes(x = max(plot_data$NODF, na.rm = TRUE)*1.05, 
+                                    y = combined, label = letters),inherit.aes = FALSE,
+             hjust = 0,size = 4 )+
+  theme(legend.position = "none", axis.title.y = element_blank(), axis.title.x = element_text(size = 14),
+        axis.text.y  = element_text(size = 12), axis.text.x  = element_text(size = 12), axis.ticks.y = element_blank() ) +
+  xlab("NODF")+
+  scale_y_discrete(labels = change_labels)+
+  scale_fill_manual(values = cols_network)
+
+ggsave("../Images/NODF_overall_status.png", plot_NODF, width =6, height=4)
+```
+
+
+## 3.4 Modularity
+```{r}
+# check contribution species
+# some intra come multiple times (intra and native)
+# merge status and plant name if this is the case
+dup <- interactions |> distinct(plant_taxa, status)
+dup <- dup[duplicated(dup$plant_taxa) | duplicated(dup$plant_taxa, fromLast = T),]
+
+dup$new_name <- paste(dup$plant_taxa, " (", dup$status,")", sep="")
+
+interactions$plant_new_name <-  paste(interactions$plant_taxa, " (", interactions$status,")",
+                                      sep="")
+
+# create matrix to use
+mat <- interactions |>
+  # get only unique interactions
+  distinct(plant_new_name, name) |> 
+  # give these interactions all a 1 (presence)
+  mutate(value = 1) |>
+  # assign names
+  pivot_wider(names_from  = name,  values_from = value, values_fill = 0) |>
+  column_to_rownames("plant_new_name") |>
+  as.matrix()
+
+# check whether dimensions are okay
+any(duplicated(rownames(mat)))
+any(is.na(mat))
+```
+
+
+```{r}
+# run modules assessment
+res <- netcarto(mat, bipartite=T)
+# save (takes very long to calculate)
+write_rds(res, "../Extra/Intermediate/modularity_overall.Rdata")
+
+# retrieve data
+species_mod <- res[[1]]
+# change again status
+species_mod <- species_mod |> tidyr::extract(name, into = c("plant_taxa", "status"), regex = "^(.*) \\((.*)\\)$" )
+
+# check boundaries
+quantile(species_mod$connectivity, 0.9)
+quantile(species_mod$participation, 0.9)
+```
+
+
+```{r}
+# for plotting, we will change the values
+species_mod$alpha_val <- ifelse(species_mod$status == "native", 0.75, 1)
+species_mod$size_val <- ifelse(species_mod$status == "native", 1,2)
+
+# plot
+p <- ggplot(species_mod, aes(participation, connectivity, col=status))+
+  geom_point(alpha= species_mod$alpha_val, size= species_mod$size_val)+
+  theme_pubr()+
+  geom_vline(xintercept=quantile(species_mod$participation, 0.9), linetype='dotted', alpha=1)+
+  geom_hline(yintercept=quantile(species_mod$connectivity, 0.9), linetype='dotted', alpha=1)+
+  xlab("Among-module connectivity (c)")+
+  ylab("Within-module degree (z)")+
+  scale_colour_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"), 
+                    labels = c("Extra-\nEuropean", "Intra-\nEuropean", "Native")) +
+  scale_fill_manual(values=c( "#F07167","#7CAE00", "#00A9A5"), 
+                    breaks=c("extra","intra", "native"), 
+                    labels = c("Extra-\nEuropean", "Intra-\nEuropean", "Native"))+
+  theme(legend.position = "bottom")+ 
+  theme(legend.title = element_blank())
+
+save <- ggExtra::ggMarginal(p, type = "boxplot", groupColour = TRUE, groupFill = TRUE, margins = "both")
+
+# save
+ggsave("../Images/Modularity_overall.png", save, width = 6, height = 4)
+
+# check significance participation
+sign_status <- (lm(participation ~ status, species_mod))# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+cld_results
+
+# check significance connectoivity 
+sign_status <- (lm(connectivity ~ status, species_mod))# check significance
+emm <- emmeans(sign_status, pairwise ~ status)
+cld_results <- cld(emm, alpha = 0.05, Letters = letters, adjust = "tukey", reversed=T)
+cld_results$.group <- gsub(" ","",cld_results$.group)
+cld_results
+
+# in future add this manually
+```
+
+
+```{r}
+# look at modules
+length(unique(species_mod$module))
+
+# look at modules
+check_rel <- species_mod |> group_by(module) |> summarise(rel_nat=sum(status=="native")/length(status), n=n())
+
+ggplot(species_mod)+
+  geom_violin(aes( y=n))
+
+check_rel <- check_rel[check_rel$n > 1,]
+
+# check this function
+computeModules()
+```
+
+
+
+# 4 Plot
+```{r}
+# create matrix 
+plot_matrix <- interactions |> group_by(status, pol_family, plant_taxa, name) |> 
+  summarise(n =n())
+# count number of unique interactions
+plot_matrix <- interactions |> group_by(status, pol_family) |> 
+  summarise(n =n())
+
+# make dataframe
+plot_matrix <- plot_matrix |> pivot_wider(values_from = n, names_from = pol_family) |>
+  as.data.frame()
+# change names and remove status column
+rownames(plot_matrix) <- c("Extra-European","Intra-European","Native")
+plot_matrix <- plot_matrix[, -1]
+
+# assign colour
+bee_cols <- c("Andrenidae"= "#E69F00", "Apidae"= "#0072B2", "Halictidae" = "#CC79A7","Megachilidae"= "#D55E00","Melittidae"= "#6A3D9A" )
+cols <- c("Extra-European" = "#F07167","Intra-European"  = "#7CAE00","Native" = "#00A9A5")
+
+# plot
+png("../Images/my_plotweb.png", width = 1500, height = 750, res = 150)
+plotweb(plot_matrix, lower_color = cols, link_color = "lower", higher_color = bee_cols, text_size = 0.85)
+dev.off()
+```
+
+
+# ECO
+# 1 Subdivide
+```{r}
+# remove singletons
+interactions <- interactions |>   group_by(name, plant_taxa, eco_region) |>  
+  filter(n() >= 2) |>  ungroup()
+
+# only status subdivisions
+interaction_matrix <-interactions|>
+  dplyr::count(name,plant_taxa,eco_region,status)|> 
+  tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
+
 interaction_matrix <- as.data.frame(interaction_matrix)
 ```
 
 
 ```{r}
 # create databases per network
-ecoregions <- as.data.frame(unique(interaction_matrix$eco_region))
-colnames(ecoregions) <- "name"
-ecoregions$abbreviation <- c("West", "Turk", "Med","Atl","Cent","Sp","Sarm","Balt","Temp_B","Alp","Bor","Tun","Temp_C")
-interaction_matrix$eco_region <- ecoregions$abbreviation[match(interaction_matrix$eco_region, ecoregions$name)]
+ecoregions <- interactions |> group_by(eco_region) |> summarise(n=n() )
+ecoregions_int <- interaction_matrix |> group_by(eco_region) |>
+  summarise(n_int=n(), n_alien = sum(status != "native"), n_nat = sum(status == "native"))
+ecoregions <- left_join(ecoregions, ecoregions_int)
+
+# how well are the two correlated
+cor.test(ecoregions$n, ecoregions$n_int, method= "pearson")
+
+# for which will we calculate the network metrics
+boxplot(ecoregions$n_int)
+summary(ecoregions$n_int)
+
+# let's say for now a minimum of 10 interactions
+min_int <- 100
+```
+
+
+```{r}
+# get abbreviations for the names in the database
+eco <- data.frame(unique(ecoregions$eco_region))
+colnames(eco) <- "name"
+eco$abbreviation <- c("Turk", "Alps", "Balt","Bor","Celt","Centr","Engl","Mix","Med",
+                            "Spain","Pan","Sam","Ib","Broad","Con","Grass","Tun","West") 
+ecoregions$abbreviation <- eco$abbreviation[match(ecoregions$eco_region, eco$name)]
+
+# remove some observations from this list which are too small to allow calculation
+ecoregions <- ecoregions[ecoregions$n_int >= min_int,]
+
+# add abbreviations
+interaction_matrix$eco_region <- ecoregions$abbreviation[match(interaction_matrix$eco_region,
+                                                               ecoregions$eco_region)]
+
+# remove interactions not present anymore
+interaction_matrix <- interaction_matrix[!is.na(interaction_matrix$eco_region),]
+
+# make the name column better to discern between intra and native
+interaction_matrix$name <-  paste(interaction_matrix$plant_taxa, 
+                                            " (", interaction_matrix$status,")", sep="")
+interaction_matrix <- interaction_matrix |> relocate(name, .after= status)
+```
+
+
+```{r}
+# subdivide interaction matrices
+interaction_matrices <- list()
+for(i in ecoregions$abbreviation){
+  p <- (interaction_matrix[interaction_matrix$eco_region == i, , drop = FALSE])
+  rownames(p) <- p$name
+  p <- p[, 5:ncol(p)]
+  p <- p[, colSums(p) > 0]
+  interaction_matrices[[i]] <- p
+}
+```
+
+
+# 2 Species
+## 2.1 Metrics
+```{r}
+# get species level networks
+species_degree_df <- lapply(names(interaction_matrices), function(i){
+
+  mat <- interaction_matrices[[i]]
+  mat <- as.matrix(mat)
+  mode(mat) <- "numeric"
+  nL <- nrow(mat)
+  nH <- ncol(mat)
+
+  deg <- specieslevel(mat,"degree")
+  ND <- specieslevel(mat,"normalised degree")
+  strg <- specieslevel(mat,"species strength")
+
+  if(nL>=2 && nH>=2){
+    NSI <- specieslevel(mat,"NSI")
+    BC <- specieslevel(mat,"betweenness")
+    NSI_H <- NSI$`higher level`
+    NSI_L <- NSI$`lower level`
+    BC_H <- BC$`higher level`$betweenness
+    BC_L <- BC$`lower level`$betweenness
+  } else {
+    NSI_H <- rep(NA,nH)
+    NSI_L <- rep(NA,nL)
+    BC_H <- rep(NA,nH)
+    BC_L <- rep(NA,nL)
+  }
+  
+  bind_rows(data.frame(species=colnames(mat), n=nH, degree=deg$`higher level`,
+                       ND=ND$`higher level`, strength=strg$`higher level`, NSI=NSI_H, 
+                       BC=BC_H, trophic_level="pollinator", ecoregion=i),
+            data.frame(species=rownames(mat), n=nL, degree=deg$`lower level`,
+                       ND=ND$`lower level`, strength=strg$`lower level`, NSI=NSI_L, 
+                       BC=BC_L, trophic_level="plant", ecoregion=i))
+}) |> bind_rows()
+
+# make nicer row names
+rownames(species_degree_df) <- 1: nrow(species_degree_df)
+```
+
+
+
+# ECO-LAND
+# 1 Subdivide
+```{r}
+# remove singletons
+interactions <- interactions |>   group_by(name, plant_taxa, eco_region, euromed_region) |>  
+  filter(n() >= 2) |>  ungroup()
+
+# only status subdivisions
+interaction_matrix <-interactions|>
+  dplyr::count(name,plant_taxa,eco_region,euromed_region,status)|> 
+  tidyr::pivot_wider(names_from = name,values_from = n, values_fill = list(n = 0))
+
+interaction_matrix <- as.data.frame(interaction_matrix)
+```
+
+
+```{r}
+# create databases per network
+ecoregions <- interactions |> group_by(eco_region, euromed_region) |> summarise(n=n() )
+ecoregions_int <- interaction_matrix |> group_by(eco_region, euromed_region) |>
+  summarise(n_int=n(), n_alien = sum(status != "native"), n_nat = sum(status == "native"))
+ecoregions <- left_join(ecoregions, ecoregions_int)
+
+# how well are the two correlated
+cor.test(ecoregions$n, ecoregions$n_int, method= "pearson")
+
+# for which will we calculate the network metrics
+boxplot(ecoregions$n_int)
+summary(ecoregions$n_int)
+
+# let's say for now a minimum of 10 interactions
+min_int <- 10
+```
+
+
+```{r}
+# get abbreviations for the names in the database
+eco <- data.frame(unique(ecoregions$eco_region))
+colnames(eco) <- "name"
+eco$abbreviation <- c("Turk", "Alps", "Balt","Bor","Celt","Centr","Engl","Mix","Med",
+                            "Spain","Pan","Sam","Ib","Broad","Con","Grass","Tun","West") 
+ecoregions$abbreviation <- eco$abbreviation[match(ecoregions$eco_region, eco$name)]
+ecoregions$name <- paste(ecoregions$abbreviation, ecoregions$euromed_region, sep= "_")
+
+# remove some observations from this list which are too small to allow calculation
+ecoregions <- ecoregions[ecoregions$n_int >= 10,]
+
+# add abbreviations
+interaction_matrix$eco_region <- ecoregions$abbreviation[match(interaction_matrix$eco_region,
+                                                               ecoregions$eco_region)]
+
+# link with region
+interaction_matrix$region <- paste(interaction_matrix$eco_region,
+                                   interaction_matrix$euromed_region, sep= "_")
+interaction_matrix <- interaction_matrix |> relocate(region, .after= euromed_region)
 ```
 
 
@@ -72,6 +1522,7 @@ for(i in ecoregions$abbreviation){
   interaction_matrices[[i]] <- p
 }
 ```
+
 
 # 2 Species
 ## 2.1 Metrics
@@ -123,8 +1574,8 @@ species_degree_df$node.specialisation.index.NSI[species_degree_df$node.specialis
 
 ```{r}
 # assign family and genus levels
-species_degree_df$genus <- interactions$obs_genus[match(species_degree_df$species, interactions$plant_taxa)]
-species_degree_df$family <- interactions$obs_family[match(species_degree_df$species, interactions$plant_taxa)]
+species_degree_df$genus <- interactions$plant_genus[match(species_degree_df$species, interactions$plant_taxa)]
+species_degree_df$family <- interactions$plant_family[match(species_degree_df$species, interactions$plant_taxa)]
 species_degree_df$genus[is.na(species_degree_df$genus)] <- interactions$pol_genus[match(species_degree_df$species[is.na(species_degree_df$genus)], interactions$name)]
 species_degree_df$family[is.na(species_degree_df$family)] <- interactions$pol_family[match(species_degree_df$species[is.na(species_degree_df$family)], interactions$name)]
 ```
@@ -175,87 +1626,27 @@ plotModuleWeb(mod)
 ```
 
 
-# 2 Network indices
-Which chose?
-- connectance (depend on specialisation but also sampling intensity)
 
 
-Table
-- connectance
-- links per species
-- nestedness
-- mean number of partners
-- degree
-
-Network level
+# FIELDWORK
 ```{r}
-# COMPARTMENTS
-# compartments are sub sets not connected to another one
-# visualise using visweb
-# visweb(interaction_matrix_Atl)
+# check some species
+check <- c( "Allium sphaerocephalon", "Allium ursinum", "Allium vineale", "Arnica montana", "Campanula glomerata","Campanula persicifolia",
+            "Campanula rotundifolia", "Campanula trachelium", "Centaurea jacea","Centaurea scabiosa",  "Cichorium intybus", "Cirsium vulgare",
+            "Echium vulgare",  "Eupatorium cannabinum", "Helichrysum arenarium","Inula salicina", "Jacobaea vulgaris","Knautia arvensis",
+            "Lotus corniculatus", "Origanum vulgare", "Picris hieracioides","Reseda lutea", "Scabiosa columbaria","Scorzonera humilis",
+            "Serratula tinctoria","Tanacetum vulgare",  "Tragopogon pratensis","Trifolium pratense", "Succisa pratensis","Potentilla erecta",
+            "Lythrum salicaria","Odontites vulgaris","Lysimachia vulgaris")
 
+subset <- interactions[interactions$plant_taxa %in% check  & interactions$euromed_region=="Belgium",]
+subset <- subset |> distinct(plant_taxa, name) |> group_by(plant_taxa) |> summarise(n=n())
 
-# NESTEDNESS
-# 0 highly nested, 1 pure chaos
-nestedness<- networklevel(interaction_matrix_Atl, index= "nestedness")
-# for null models, use nested
-null_model <- nested(interaction_matrix_Atl)
-# higher values more nested here
-#nestedness_NODF <- networklevel(interaction_matrix, index= "NODF")
-# interaction frequencies accounted for (0 chaos to 1 nested)
+# check again
+pieter <- readxl::read_excel("C:/Users/u0166342/Documents/Doctoraat/Camera/Species/Species_Pieter_Vannormelingen.xlsx", sheet= "DirkM_14apr2025")
 
-
-# SPECIALISATION AND DIVERSITY
-# dependence assymetry --> specialisation 
-# alternative ISAmethod= 'Bluethgen' --> positive = higher dependence in higher trophic 
-# more info specieslevel --> index push/pull affecting of being affected
-ISA<- networklevel(interaction_matrix, index= "ISA", ISAmethod= 'Bluethgen')
-# assymetry (high vs low) of specialisation
-# Bluethgen --> weight by abundance or log -_> log transformation d values
-# positive --> higher specialisation higher trophic level
-SA <- networklevel(interaction_matrix, index= "SA", SAmethod= 'Bluethgen')
-# balance between numbers in level, negative more lower trophic (plants here) species
-#web_assymetry<- networklevel(interaction_matrix, index= "web asymmetry")
-#int_eveness  <- networklevel(interaction_matrix, index= "interaction evenness")
-
-# CONNECTANCE 
-# realised proportion of possible links
-connectance <- networklevel(interaction_matrix, index= "connectance")
-# average of vulnerability and generality
-#link_dens <- networklevel(interaction_matrix, index= "linkage density")
-# lingage density / number species
-#weight_connect<- networklevel(interaction_matrix, index= "weighted connectance")
-# number realised links divided by number possible (all, higher, lower)
-cluster_coef <-  networklevel(interaction_matrix, index= "cluster coefficient")
-#mean number of links per species
-#links_pp<- networklevel(interaction_matrix, index= "links per species")
+subset <- interactions[interactions$name %in% pieter$`Scientific name`[pieter$flower_pref=="oligo"] &
+                       interactions$plant_taxa %in% check & interactions$euromed_region=="Belgium", ]
+subset <- subset |> distinct(plant_taxa, name) |> group_by(plant_taxa) |> summarise(n=n())
 ```
 
-Group level
-```{r}
-# BASIC
-num_sp <- networklevel(interaction_matrix, index= "number of species")
-#weight_clust_coef <- networklevel(interaction_matrix, index= "weighted cluster coefficient")
-
-# generalitivity --> mean effective number of LL species per HL species, HL per LL species for vulenerability
-gen <-networklevel(interaction_matrix, index= "generality")
-# area below secondary extinction sequency
-robustness <- networklevel(interaction_matrix, index= "robustness")
-# mean number of co-occuoancies
-#togetherness<- networklevel(interaction_matrix, index= "togetherness")
-# niche overlap --> mean similarity
-niche_overlap<- networklevel(interaction_matrix, index= "niche overlap")
-```
-
-
-
-
-Modules
-```{r}
-mod <- computeModules(interaction_matrices[[2]])
-png("module_web_plot.png", width = 1000, height = 800, res = 150)
-
-plotModuleWeb(mod)
-
-```
 

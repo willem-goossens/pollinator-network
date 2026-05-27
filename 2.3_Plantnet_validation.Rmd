@@ -23,9 +23,18 @@ Load data
 ```{r}
 # identified species
 pol_plantnet <- read.csv("../Results/Plantnet_identification.csv")
+pol_plantnet_iNat <- read.csv("../Results/Plantnet_identification_iNat.csv")
 pol_plantnet_observation <- pol_plantnet
+
+
+# make ID a character
+pol_plantnet$ID <- as.character(pol_plantnet$ID)
+
+# merge
+pol_plantnet <- bind_rows(pol_plantnet, pol_plantnet_iNat)
 # overall dataset
 pol <- read.csv("../Data/Observation/observation_org_bees.csv")
+nat <- read_csv("../Data/Observation/iNaturalist_bees.csv", show_col_types = FALSE)
 
 # species names
 names <- read_csv("../Data/Names/Names_plants_observation.csv", show_col_types = FALSE)
@@ -97,12 +106,9 @@ pol_plantnet$names[is.na(pol_plantnet$names)] <- pol_plantnet$obs_genus[is.na(po
 
 # assign level
 pol_plantnet$rank[!is.na(pol_plantnet$obs_subspecies)] <- names$type[match(pol_plantnet$names[!is.na(pol_plantnet$obs_subspecies)], names$subspecies)]
-pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_species)] <- 
-  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_species)], names$species)]
-pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_genus)] <- 
-  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_genus)], names$genus)]
-pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_family)] <- 
-  names$type[match(pol_plantnet$names[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_family)], names$family)]
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_species)] <- "species"
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_genus)] <- "genus"
+pol_plantnet$rank[is.na(pol_plantnet$rank) & !is.na(pol_plantnet$obs_family)] <- "family"
 # save
 sum(!is.na(pol_plantnet$rank))
 
@@ -113,13 +119,14 @@ check_genera <- check_genera[!is.na(vegdata::parse.taxa(check_genera$obs_genus)$
 # change in pol_plantnet
 pol_plantnet$obs_genus[pol_plantnet$Name %in% check_genera$Name] <- 
   check_genera$obs_genus[match(pol_plantnet$Name[pol_plantnet$Name %in% check_genera$Name], check_genera$Name)]
+
+pol_plantnet |> group_by(rank) |> summarise(n =n())
 ```
 
 
 ## 2.2 GBIF
 ```{r}
 # saved names
-# write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
 
 # get unique plants
 plantnet_names <- pol_plantnet[!duplicated(pol_plantnet$Name), c(3, 14, 6, 7)]
@@ -211,25 +218,34 @@ genus_dataframe <- data.frame(old = c("Taraxacum sect. Taraxacum", "Pinus",
                                       "Oreomecon olchonensis","Troncosoa seriphioides",
                                       "Gyrophyllum tripteris","Gyrophyllum major", "Dahlia",
                                       "Bougainvillea","Phalaenopsis","Valeriana orientalis",
-                                      "Mutarda carinata", "Genista etnensis", "Echinopsis","Oreomecon lapponica"),
+                                      "Mutarda carinata", "Genista etnensis", "Echinopsis","Oreomecon lapponica",
+                                      "Cymbidium","Oncidium","Meiosperma bracteatum", 
+                                      "Fuchsia","Ficus","Salimenaea integrifolia"),
                               species = c(NA, NA, "Sinapis arvensis","Anacis palmata", NA, NA,
                                           "Oreomecon crocea","Anacis verticillata",
                                           "Oreomecon olchonensis","Troncosoa seriphioides",
                                           "Anacis tripteris","Anacis major", NA, NA, NA,
-                                          "Valeriana orientalis", "Brassica carinata", "Genista etnensis","Echinopsis", "Oreomecon lapponica"),
+                                          "Valeriana orientalis", "Brassica carinata", "Genista etnensis","Echinopsis", "Oreomecon lapponica",
+                                          NA,NA,"Meiosperma bracteatum",NA,NA,
+                                          "Salimenaea integrifolia"),
                               genus= c("Taraxacum", "Pinus", "Sinapis", "Anacis", "Salix", "Viola",
                                        "Oreomecon","Anacis", "Oreomecon","Troncosoa","Anacis",
                                        "Anacis", "Dahlia","Bougainvillea", "Phalaenopsis",
-                                       "Valeriana","Brassica", "Genista","Echinopsis", "Oreomecon"),
+                                       "Valeriana","Brassica", "Genista","Echinopsis", "Oreomecon",
+                                       "Cymbidium","Oncidium","Meiosperma", "Fuchsia",
+                                       "Ficus","Salimenaea"),
                               family = c("Asteraceae", "Pinaceae","Brassicaceae", "Asteraceae",
                                          "Salicaceae","Violaceae", "Papaveraceae","Asteraceae",
                                          "Papaveraceae","Verbenaceae","Asteraceae","Asteraceae",
                                          "Asteraceae", "Nyctaginaceae","Orchidaceae",
-                                         "Caprifoliaceae","Brassicaceae", "Fabaceae","Cactaceae", "Papaveraceae"),
-                              rank = c("COMPLEX", "GENUS", "SPECIES", "SPECIES", "GENUS",
+                                         "Caprifoliaceae","Brassicaceae", "Fabaceae","Cactaceae", "Papaveraceae",
+                                         "Orchidaceae","Orchidaceae","Acanthaceae",
+                                         "Onagraceae","Moraceae","Verbenaceae"),
+                              rank = c("GENUS", "GENUS", "SPECIES", "SPECIES", "GENUS",
                                        "GENUS", "SPECIES","SPECIES","SPECIES", "SPECIES",
                                        "SPECIES","SPECIES", "GENUS", "GENUS", "GENUS", 
-                                       "SPECIES", "SPECIES", "SPECIES", "GENUS", "SPECIES"))
+                                       "SPECIES", "SPECIES", "SPECIES", "GENUS", "SPECIES",
+                                       "GENUS","GENUS","SPECIES","GENUS","GENUS","SPECIES"))
 
 # assign
 lacking_names_gbif$GBIF <- genus_dataframe$species[match(lacking_names_gbif$names, genus_dataframe$old)]
@@ -240,27 +256,30 @@ lacking_names_gbif$GBIF_kingdom <- "PLANTAE"
 
 # assign
 names[is.na(names$GBIF_genus),] <- lacking_names_gbif
-write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
+#write_csv(names, "../Data/Names/Names_plants_plantnet.csv")
 ```
 
 
 ## 2.3 Assign
 ```{r}
-names <- read_csv("../Data/Names/Names_plants_plantnet.csv")
+names <- read_csv("../Data/Names/Names_plants_plantnet.csv", show_col_types = FALSE)
 
 # assign names
 pol_plantnet$obs_species[is.na(pol_plantnet$obs_species)] <- names$GBIF[match(pol_plantnet$Name[is.na(pol_plantnet$obs_species)], names$Name)]
 pol_plantnet$obs_genus[is.na(pol_plantnet$obs_genus)] <- names$GBIF_genus[match(pol_plantnet$Name[is.na(pol_plantnet$obs_genus)], names$Name)]
 pol_plantnet$obs_family[is.na(pol_plantnet$obs_family)] <- names$GBIF_family[match(pol_plantnet$Name[is.na(pol_plantnet$obs_family)], names$Name)]
 pol_plantnet$rank[is.na(pol_plantnet$rank)] <- tolower(names$GBIF_rank[match(pol_plantnet$Name[is.na(pol_plantnet$rank)], names$Name)])
-
+lacking <- pol_plantnet[is.na(pol_plantnet$rank),]
 # check how many
 pol_plantnet |> group_by(rank) |> summarise(n= n())
+
+remaining <- pol_plantnet[is.na(pol_plantnet$rank),]
 ```
 
 
 # 3 VALIDATION
 ## 3.1 Pollination
+Link with observation
 ```{r}
 # assign subspecies
 #pol$obs_subspecies[!is.na(pol$plant)] <- names_obs$subspecies[match(pol$plant[!is.na(pol$plant)], names_obs$taxa)]
@@ -279,9 +298,26 @@ pol$plantnet_score <-  pol_plantnet$Score[match(pol$id, pol_plantnet$ID)]
 pol$plantnet_organ <- pol_plantnet$Organ[match(pol$id, pol_plantnet$ID)]
 ```
 
-
-## 3.2 Compare
+Link with iNaturalist
 ```{r}
+# plantnet data
+nat$plantnet_subspecies <- pol_plantnet$obs_subspecies[match(nat$observation_uuid,
+                                                             pol_plantnet$ID)]
+nat$plantnet_species <- pol_plantnet$obs_species[match(nat$observation_uuid, pol_plantnet$ID)]
+nat$plantnet_genus <- pol_plantnet$obs_genus[match(nat$observation_uuid, pol_plantnet$ID)]
+nat$plantnet_family <- pol_plantnet$obs_family[match(nat$observation_uuid, pol_plantnet$ID)]
+nat$plantnet_rank <-  pol_plantnet$rank[match(nat$observation_uuid, pol_plantnet$ID)]
+nat$plantnet_score <-  pol_plantnet$Score[match(nat$observation_uuid, pol_plantnet$ID)]
+nat$plantnet_organ <- pol_plantnet$Organ[match(nat$observation_uuid, pol_plantnet$ID)]
+
+sum(is.na(nat$plantnet_rank))
+```
+
+
+## 3.2 Obs comp
+```{r}
+# read
+pol <- read_csv("../Data/Observation/observation_org_bees_dataset.csv")
 # get all data with plant data
 validation <- pol[!is.na(pol$plant) & !is.na(pol$plantnet_family),]
 ```
@@ -299,6 +335,8 @@ score_levels_family$type <- "Family"
 
 # Species
 validation_species <- validation[!is.na(validation$obs_species) & !is.na(validation$plantnet_rank),]
+validation_species <- validation_species[ validation_species$obs_rank != "aggregate",]
+
 for(i in 1: nrow(score_levels)){
   data <- validation_species[validation_species$plantnet_score >= score_levels$score_levels[i],]
   score_levels_species$score[i] <- nrow(data[data$obs_species==data$plantnet_species, ])/nrow(data)
@@ -306,6 +344,10 @@ for(i in 1: nrow(score_levels)){
   score_levels_species$rel[i] <- nrow(data)/nrow(validation_species)
 }
 
+
+# check 
+unique(validation_species$obs_rank)
+check <- validation[validation$obs_rank == "variety",]
 
 # Genus
 validation_genus <- validation[!is.na(validation$obs_genus) & !is.na(validation$plantnet_rank),]
@@ -330,15 +372,106 @@ score_levels <- rbind(score_levels_species, score_levels_genus, score_levels_fam
 score_levels$type <- factor( score_levels$type, levels = c("Species", "Genus", "Family") )
 
 # plot this
-ggplot(data = score_levels, aes(x= type, y= score, group= score_levels, fill= factor(score_levels))) +
+p <- ggplot(data = score_levels, aes(x= type, y= score, group= score_levels, fill= factor(score_levels))) +
   geom_col(position="dodge")+
-  scale_fill_brewer(palette = "Set1", name = "Score thresholds")+
+  scale_fill_brewer(palette = "Set1", name = "Score\nthresholds")+
   ggpubr::theme_pubr()+
   theme(legend.position="right", legend.box = "vertical", legend.title.position = "top")+
   theme(legend.title = element_text(hjust = 0.5))+
   xlab(NULL)+
   ylab("Percentage of aggreement")+ 
-  guides(fill = guide_legend(ncol = 1))
+  guides(fill = guide_legend(ncol = 1))+
+  geom_hline(yintercept= 0.80, linetype = "dashed", linewidth = 1)+
+  annotate("text", x = -Inf, y = 0.80, label = "80% Agreement\nScore 0.642", hjust = -0.02, vjust = -0.25)
+p
+
+ggsave("../Images/validation_scores.png", p,  width = 6, height = 4)
+write_csv( as.data.frame(score_levels), "../Results/Score_thresholds.csv")
+```
+
+
+
+```{r}
+# get value 80%
+# check between 0.62 and 0.65
+thresholds <- seq(0.80, 1, by=0.01)
+agreement_df <- data.frame(threshold = thresholds)
+
+# check values for the range
+agreement_df$agreement <- sapply(thresholds, function(th){
+  data <- validation_species[validation_species$plantnet_score >= th, ]
+  mean(data$obs_species == data$plantnet_species, na.rm=T)})
+
+# which one is the closest
+approx_result <- approx( x = agreement_df$agreement,y = agreement_df$threshold, xout = 0.9)
+approx_result$y
+
+
+# get multiple score levels
+score_levels <- data.frame(score_levels = c(0, 0.109, 0.379, 0.641, 0.903))
+score_levels_species <- data.frame(score_levels = c(0, 0.109, 0.379, 0.641, 0.903))
+score_levels_species$type <- "Species"
+score_levels_genus <- data.frame(score_levels = c(0, 0.109, 0.379, 0.641, 0.903))
+score_levels_genus$type <- "Genus"
+score_levels_family <- data.frame(score_levels = c(0, 0.109, 0.379, 0.641, 0.903))
+score_levels_family$type <- "Family"
+
+# Species
+validation_species <- validation[!is.na(validation$obs_species) & !is.na(validation$plantnet_rank),]
+validation_species <- validation_species[ validation_species$obs_rank != "aggregate",]
+
+for(i in 1: nrow(score_levels)){
+  data <- validation_species[validation_species$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_species$score[i] <- nrow(data[data$obs_species==data$plantnet_species, ])/nrow(data)
+  score_levels_species$n[i] <- nrow(data)
+  score_levels_species$rel[i] <- nrow(data)/nrow(validation_species)
+}
+
+
+# check 
+unique(validation_species$obs_rank)
+check <- validation[validation$obs_rank == "variety",]
+
+# Genus
+validation_genus <- validation[!is.na(validation$obs_genus) & !is.na(validation$plantnet_rank),]
+for(i in 1: nrow(score_levels)){
+  data <- validation_genus[validation_genus$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_genus$score[i] <- nrow(data[data$obs_genus==data$plantnet_genus, ])/nrow(data)
+  score_levels_genus$n[i] <- nrow(data)
+  score_levels_genus$rel[i] <- nrow(data)/nrow(validation_genus)
+}
+
+
+# Family
+validation_family <- validation[!is.na(validation$obs_family) & !is.na(validation$plantnet_rank),]
+for(i in 1: nrow(score_levels)){
+  data <- validation_family[validation_family$plantnet_score >= score_levels$score_levels[i],]
+  score_levels_family$score[i] <- nrow(data[data$obs_family==data$plantnet_family, ])/nrow(data)
+  score_levels_family$n[i] <- nrow(data)
+  score_levels_family$rel[i] <- nrow(data)/nrow(validation_family)
+}
+
+score_levels <- rbind(score_levels_species, score_levels_genus, score_levels_family)
+score_levels$type <- factor( score_levels$type, levels = c("Species", "Genus", "Family") )
+
+
+# add for all lines
+
+# plot this
+p <- ggplot(data = score_levels, aes(x= type, y= score, group= score_levels, fill= factor(score_levels))) +
+  geom_col(position="dodge", alpha = 0.65)+
+  ggpubr::theme_pubr()+
+  theme(legend.position="right", legend.box = "vertical", legend.title.position = "top",axis.text.y = element_text(size = 12))+
+  theme(legend.title = element_text(hjust = 0.5))+
+  xlab(NULL)+
+  ylab("Percentage\nof aggreement")+ 
+  guides(fill = guide_legend(ncol = 1))+
+  scale_fill_viridis_d(option = "D",  name = "Reliability\nscore" )+
+  scale_y_continuous(breaks = seq(0, 1, by = 0.1),   labels = \(x) ifelse(round(x,1) %in% c(0.2, 0.4,0.6, 0.8, 1), round(x,1), ""))
+
+p
+
+ggsave("../Images/validation_scores_all.png", p,  width = 6, height = 4)
 ```
 
 
@@ -352,14 +485,57 @@ validation_improved <- validation[is.na(validation$obs_species) & validation$obs
                                     !is.na(validation$plantnet_rank),]
 ```
 
-## 3.3 Data
+
+## 3.3 iNat comp
+```{r}
+host <- read_csv("../Results/iNaturalist_host_plants.csv", show_col_types = FALSE)
+not_plants <- c("Apis mellifera","Bombus terrestris","Nomada lathburiana",
+  "Megachile centuncularis","Cetonia aurata","Synema globosum","Misumena vatia",
+  "Rivne region","Vingio skyrius")
+
+host <- host[!host$plant %in% not_plants,]
+host <- host[!duplicated(host$observation__uuid),]
+
+check <- nat[nat$observation_uuid %in% host$observation__uuid,]
+
+host$plantnet <- check$plantnet_species[match(host$observation__uuid,check$observation_uuid)]
+host$score <- check$plantnet_score[match(host$observation__uuid,check$observation_uuid)]
+
+# check relative correspondance
+rel <- host[host$score >= 0.6,]
+nrow(rel[rel$plant==rel$plantnet, ])/nrow(rel)
+```
+
+## 3.4 Numbers
+```{r}
+# check number of species
+bees <- pol|> group_by(name) |> summarise(n=n())
+bees_nat <- nat |> group_by(name) |> summarise(n=n())
+
+bees <- bind_rows(bees, bees_nat)
+
+bees <- bees |> group_by(name) |> summarise(n =sum(n))
+```
+
+
+
+## 3.5 Data
+```{r}
+# save the current versions
+write_csv(pol, "../Data/Observation/observation_org_bees_dataset.csv")
+write_csv(nat, "../Data/Observation/iNaturalist_bees_dataset.csv")
+```
+
+
+
 ```{r}
 # get all relevant data
 # check how many with plantnet identification are according to the rules
-sum(!is.na(pol$plantnet_rank) & pol$plantnet_score>=0.60)
+sum(!is.na(pol$plantnet_rank) & pol$plantnet_score>=0.642)
+sum(!is.na(pol$plantnet_rank) & pol$plantnet_score>=0.642) / sum(!is.na(pol$plantnet_rank) & pol$plantnet_score>=0)
 
 # relevant
-interactions <- pol[(!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=0.60 ) & pol$plantnet_organ == "flower"),]
+interactions <- pol[(!is.na(pol$plant) | (!is.na(pol$plantnet_rank) & pol$plantnet_score >=0.642 ) & pol$plantnet_organ == "flower"),]
 
 # assign species
 interactions$plant_taxa <- interactions$obs_species
@@ -375,37 +551,133 @@ interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$obs_fami
 interactions$plant_taxa[is.na(interactions$plant_taxa)] <- interactions$plantnet_family[is.na(interactions$plant_taxa)] 
 interactions$plant_rank_final[!is.na(interactions$plant_taxa) & is.na(interactions$plant_rank_final)] <- "Family"
 
+# assign genus
+interactions$plant_genus[!is.na(interactions$obs_species)] <- interactions$obs_genus[!is.na(interactions$obs_species)]
+interactions$plant_genus[is.na(interactions$plant_genus)] <- interactions$plantnet_genus[is.na(interactions$plant_genus)]
+interactions$plant_genus[is.na(interactions$plant_genus)] <- interactions$obs_genus[is.na(interactions$plant_genus)]
+
+# get family
+interactions$plant_family[!is.na(interactions$obs_species)] <- interactions$obs_family[!is.na(interactions$obs_species)]
+interactions$plant_family[is.na(interactions$plant_family)] <- interactions$plantnet_family[is.na(interactions$plant_family)]
+interactions$plant_family[is.na(interactions$plant_family)] <- interactions$obs_family[is.na(interactions$plant_family)]
+
 # save this dataset
 write_csv(interactions, "../Results/Interaction_dataset.csv")
 ```
 
+
+```{r}
+# get all relevant data
+# check how many with plantnet identification are according to the rules
+sum(!is.na(nat$plantnet_rank) & nat$plantnet_score>=0.642)
+sum(!is.na(nat$plantnet_rank) & nat$plantnet_score>=0.642) / sum(!is.na(nat$plantnet_rank) & nat$plantnet_score>=0)
+
+# relevant
+interactions_nat <- nat[(!is.na(nat$plantnet_rank) & nat$plantnet_score >=0.642 ) & nat$plantnet_organ == "flower",]
+
+# assign species
+interactions_nat$plant_taxa <-  interactions_nat$plantnet_species
+interactions_nat$plant_rank_final <- "Species"
+# remaining can be genera
+interactions_nat$plant_taxa[is.na(interactions_nat$plant_taxa)] <- interactions_nat$plantnet_genus[is.na(interactions_nat$plant_taxa)] 
+interactions_nat$plant_rank_final[!is.na(interactions_nat$plant_taxa) & is.na(interactions_nat$plant_rank_final)] <- "Genus"
+# remaining can be family
+interactions_nat$plant_taxa[is.na(interactions_nat$plant_taxa)] <- interactions_nat$plantnet_family[is.na(interactions_nat$plant_taxa)] 
+interactions_nat$plant_rank_final[!is.na(interactions_nat$plant_taxa) & is.na(interactions_nat$plant_rank_final)] <- "Family"
+
+# assign genus
+interactions_nat$plant_genus <- interactions_nat$plantnet_genus
+# get family
+interactions_nat$plant_family<- interactions_nat$plantnet_family
+
+# save this dataset
+write_csv(interactions_nat, "../Results/Interaction_dataset_nat.csv")
+```
+
+
+```{r}
+# get downsized databases with data present in both
+interactions <- interactions |> dplyr::select(id, date, name, pol_species, pol_genus, pol_family, pol_rank, 
+                                              plantnet_subspecies, plantnet_species, plant_taxa, plant_genus, plant_family, plant_rank_final,
+                                              lat, lng)
+interactions$source <- "Observation.org"
+interactions_nat <- interactions_nat |> dplyr::select(observation_uuid, observed_on, name, species, genus, family, rank, 
+                                              plantnet_subspecies, plantnet_species, plant_taxa, plant_genus, plant_family, plant_rank_final,
+                                              latitude, longitude)
+interactions_nat$source <- "iNaturalist.org"
+
+# change name
+colnames(interactions_nat) <- colnames(interactions)
+
+# save 
+interactions$id <- as.character(interactions$id)
+interactions$date <- as.Date(interactions$date, format = "%Y-%m-%d")
+interactions_nat$date <- as.Date(interactions_nat$date, format = "%Y-%m-%d")
+
+# combine
+all <- bind_rows(interactions, interactions_nat)
+```
+
+
 Look at time
 ```{r}
 # reduce final dataset
-interactions$date <- as.Date(interactions$date, format= c("%Y/%m/%d"))
-
-interactions <- interactions |> 
+all <- all |> 
   mutate(time_period = cut(as.Date(date),
          breaks = as.Date(c("1995-01-01","2010-01-01" ,"2025-12-31")), right =F))
 ```
 
 
+## 3.5 Interaction number
 Look at number of interactions
 ```{r}
 # create network
-network_interaction <- interactions |>  group_by(name, plant_taxa) |> summarize(total_interactions = n(), .groups = 'drop')
+network_interaction <- all |>  group_by(name, plant_taxa) |> summarize(total_interactions = n(), .groups = 'drop')
 
 # look at number of interactions taken into account
 threshold <- data.frame(level = c(1,2,3,4,5,10))
 for(i in 1: nrow(threshold)){
   threshold$n_interactions[i] <- nrow(network_interaction[network_interaction$total_interactions >= threshold$level[i],])
   threshold$n_observations[i] <- nrow(interactions |>   group_by(name, plant_taxa) |>  filter(n() >= threshold$level[i]) |>  ungroup())
+  threshold$n_bees[i] <- length(unique(network_interaction$name[network_interaction$total_interactions >= threshold$level[i]]))
+  threshold$n_plants[i] <- length(unique(network_interaction$plant_taxa[network_interaction$total_interactions >= threshold$level[i]]))
+  threshold$rel_interactions[i] <- threshold$n_interactions[i]/threshold$n_interactions[1]
+  threshold$rel_observations[i] <- threshold$n_observations[i]/threshold$n_observations[1]
+  threshold$rel_plants[i] <- threshold$n_plants[i]/threshold$n_plants[1]
+  threshold$rel_bees[i] <- threshold$n_bees[i]/threshold$n_bees[1]
 }
 
-# get those with at least 5 interactions
+threshold_pivot <- threshold |> pivot_longer(cols = rel_interactions: rel_bees,names_to = "data", values_to = "rel")
+threshold_pivot$data <- factor(threshold_pivot$data,levels = c("rel_interactions","rel_plants","rel_bees","rel_observations"))
+
+p <- ggplot(data = threshold_pivot, aes(x= data, y= rel, group= level, fill= factor(level))) +
+  geom_col(position="dodge")+
+  scale_fill_brewer(palette = "Set1", name = "Minimum interaction\nfrequency threshold")+
+  ggpubr::theme_pubr()+
+  theme(legend.position="right", legend.box = "vertical", legend.title.position = "top")+
+  theme(legend.title = element_text(hjust = 0.5))+
+  xlab(NULL)+
+  ylab("Proportion retained (relative to no threshold)")+
+  guides(fill = guide_legend(ncol = 1))+
+  scale_x_discrete(breaks= c("rel_interactions","rel_plants","rel_bees","rel_observations"),
+    labels= c("Unique\ninteractions","Unique\nplant species","Unique\nbee species","All\nobservations"))
+
+p
+
+ggsave("../Images/threshold_scores.png", p,  width = 8, height = 4)
+
+# get those with at least 2 interactions
 network_threshold <- interactions |>   group_by(name, plant_taxa) |>  filter(n() >= 2) |>  ungroup()
 ```
 
 
+
+```{r}
+# check some numbers
+indicated <- pol[(!is.na(pol$obs_rank)),]
+indicated_pictures <- indicated[((indicated$has.photos)),]
+non_indicated <- pol[!pol$id %in% indicated$id,]
+non_indicated <- non_indicated[non_indicated$has.photos,]
+```
 
 

@@ -25,8 +25,36 @@ library(cowplot)
 
 Load interactions
 ```{r}
-interactions <- read_csv("../Results/Interaction_dataset.csv", show_col_types = FALSE)
+interactions_obs <- read_csv("../Results/Interaction_dataset.csv", show_col_types = FALSE)
+interactions_obs_safe <- interactions_obs
+interactions_nat <-  read_csv("../Results/Interaction_dataset_nat.csv", show_col_types = FALSE)
+interactions_nat_safe <- interactions_nat
 ```
+
+```{r}
+# get downsized databases with data present in both
+interactions_obs <- interactions_obs |> dplyr::select(id, date, name, pol_species, pol_genus, pol_family, pol_rank, 
+                                              plantnet_species, plant_taxa, plant_genus, plant_family, plant_rank_final,
+                                              lat, lng, country)
+interactions_obs$source <- "Observation.org"
+interactions_nat <- interactions_nat |> dplyr::select(observation_uuid, observed_on, name, species, genus, family, rank, 
+                                              plantnet_species, plant_taxa, plant_genus, plant_family, plant_rank_final,
+                                              latitude, longitude, Country)
+interactions_nat$source <- "iNaturalist.org"
+
+# change name
+colnames(interactions_nat) <- colnames(interactions_obs)
+
+# save 
+interactions_obs$id <- as.character(interactions_obs$id)
+interactions_obs$date <- as.Date(interactions_obs$date, format = "%Y-%m-%d")
+interactions_nat$date <- as.Date(interactions_nat$date, format = "%Y-%m-%d")
+
+# combine
+interactions <- bind_rows(interactions_obs, interactions_nat)
+```
+
+
 
 
 ## 1.2 Country
@@ -194,6 +222,85 @@ interactions$eco_biome <- joinedData$BIOME_NAME[match(interactions$id, joinedDat
 ```
 
 ```{r}
+# remove Georgia
+nrow(interactions[interactions$euromed_region == "Georgia",])
+interactions <- interactions[interactions$euromed_region != "Georgia",]
+```
+
+
+
+## 1.4 Temporal
+```{r}
+# read dataset
+
+# change dates
+interactions <- interactions |> 
+  mutate(time_period = cut(as.Date(date),
+         breaks = as.Date(c("1995-01-01", "2010-01-01","2020-01-01" ,"2025-12-31")), right =F))
+
+period_counts <- table(interactions$time_period)
+
+interactions$year <- as.integer(format(interactions$date, "%Y"))
+
+# get those with at least 2 interactions
+interactions_plot <- interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= 2) |>
+  ungroup()
+
+p <- ggplot(interactions_plot) +
+  geom_histogram( aes(x = year, fill = time_period),binwidth = 1, boundary = 0.5) +
+  scale_y_log10( breaks = 10^(0:5), labels = scales::trans_format("log10", scales::math_format(10^.x)))+
+  theme_pubr() +
+  ylab("Number of observations") +
+  xlab("Year")+
+  theme(legend.position = "bottom", legend.title = element_blank())+
+  scale_colour_manual(name="time_period", 
+      values = c("1995-01-01" = "#1F78B4", "2010-01-01" = "#E31A1C", "2020-01-01" = "#33A02C"),
+      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
+                 paste0("2010-2020 (n = ", period_counts[2], ")"),
+                 paste0("2020-2025 (n = ", period_counts[3], ")")))+
+  scale_fill_manual(name="time_period",
+      values = c("1995-01-01" = "#1F78B4", "2010-01-01" = "#E31A1C", "2020-01-01" = "#33A02C"),
+      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
+                 paste0("2010-2020 (n = ", period_counts[2], ")"),
+                 paste0("2020-2025 (n = ", period_counts[3], ")")))
+
+p
+
+ggsave("../Images/timescale_period.png", p, width= 6, height= 3)
+
+```
+
+
+## 1.5 SAVE
+```{r}
+# save
+#write_csv(interactions, "../Results/Interaction_all.csv")
+
+#interactions <- read_csv("../Results/Interaction_all.csv")
+
+# remove data before 2010
+interactions <- interactions[!interactions$date < "2010-01-01", ]
+colnames(interactions)
+
+# also assign to the other datasets
+interactions_obs_safe$euromed_region <- interactions$euromed_region[match(interactions_obs_safe$id, interactions$id)]
+interactions_obs_safe <- interactions_obs_safe[!is.na(interactions_obs_safe$euromed_region),]
+interactions_obs_safe$eco_region <- interactions$eco_region[match(interactions_obs_safe$id, interactions$id)]
+interactions_obs_safe$eco_biome <- interactions$eco_biome[match(interactions_obs_safe$id, interactions$id)]
+interactions_obs_safe$eco_name <- interactions$eco_name[match(interactions_obs_safe$id, interactions$id)]
+
+# assign to iNaturalist  
+interactions_nat_safe$euromed_region <- interactions$euromed_region[match(interactions_nat_safe$observation_uuid, interactions$id)]
+interactions_nat_safe$eco_region <- interactions$eco_region[match(interactions_nat_safe$observation_uuid, interactions$id)]
+interactions_nat_safe$eco_biome <- interactions$eco_biome[match(interactions_nat_safe$observation_uuid, interactions$id)]
+interactions_nat_safe$eco_name <- interactions$eco_name[match(interactions_nat_safe$observation_uuid, interactions$id)]
+
+```
+
+
+# 2 Additional
+First create downsize dataset
+```{r}
 # create network
 network_interaction <- interactions |>  group_by(name, plant_taxa, eco_region) |> summarize(total_interactions = n(), .groups = 'drop')
 
@@ -204,13 +311,48 @@ for(i in 1: nrow(threshold)){
   threshold$n_observations[i] <- nrow(interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= threshold$level[i]) |>  ungroup())
 }
 
-# get those with at least 5 interactions
-interactions <- interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= 5) |>  ungroup()
+# get those with at least 2 interactions
+interactions <- interactions |>   group_by(name, plant_taxa, eco_region) |>  filter(n() >= 2) |>  ungroup()
+length(unique((interactions$plant_taxa[interactions$plant_rank_final=="Species"])))
+length(unique(((interactions$pol_species))))
+
+```
+
+
+```{r}
+subset <- interactions |> group_by(eco_name, country, name, plant_taxa) |> summarise(n= n())|>
+  group_by(eco_name, country) |> summarise(n=n())
 ```
 
 
 
-## 1.4 HFP
+## 2.1 CORINE
+```{r}
+# read data
+cor2000 <-  rast("../Extra/CORINE/U2006_CLC2000_V2020_20u1.tif") |> crs(4326)
+cor2006 <-  rast("../Extra/CORINE/U2012_CLC2006_V2020_20u1.tif") |> crs(4326)
+cor2012 <-  rast("../Extra/CORINE/U2018_CLC2012_V2020_20u1.tif") |> crs(4326)
+cor2018 <-  rast("../Extra/CORINE/U2018_CLC2018_V2020_20u1.tif") |> crs(4326)
+
+# reduce dataset
+coord <- interactions |> dplyr::select("id", "country","lat", "lng")
+colnames(coord)[2] <- "observation_country"
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+
+# extract the values 
+int_2000 <- terra::extract(cor2000, coord[,c(3)])
+int_2006 <- terra::extract(cor2006, coord[,c(3)])
+int_2012 <- terra::extract(cor2012, coord[,c(3)])
+int_2018 <- terra::extract(cor2018, coord[,c(3)])
+
+```
+
+
+
+
+## 2.2 HFP
 ```{r}
 # load Human Foot Print data and check crs
 hfp2009<- rast("~/Doctoraat/Impact/Extra data/DIV/HFP2009.tif")
@@ -236,8 +378,8 @@ joinedData <- st_join(coord, eco, join = st_nearest_feature)
 ```
 
 
-# 2 MAP
-## 2.1 Prepare
+# 3 MAP
+## 3.1 Prepare
 ```{r}
 library(rnaturalearth)
 library(rnaturalearthdata)
@@ -283,7 +425,7 @@ unique(interactions$eco_region)
 
 # we will keep only these
 eco_final <- eco[eco$ECO_NAME %in% interactions$eco_region,]
-eco_final <- eco_final |> select("ECO_NAME","COLOR","geometry")
+eco_final <- eco_final |> dplyr::select("ECO_NAME","COLOR","geometry")
 colnames(eco_final) <- c("Name","Color","geometry")
 eco_final$level <- "Ecoregion"
 
@@ -325,7 +467,7 @@ breaks <- 10 ^ seq(floor(log10(min(grid_counts$n[grid_counts$n > 0], na.rm =T)))
 breaks <- round(breaks, digits=0)
 ```
 
-## 2.2 Map 
+## 3.2 Map 
 ```{r}
 ggplot() +
  geom_tile(data = bathy_df, aes(x = x, y = y, fill = elevation)) +
@@ -377,7 +519,7 @@ ggsave("../Images/map_observations.png", width= 8, height= 6)
 ```
 
 
-## 2.3 Map Eco
+## 3.3 Map Eco
 ```{r}
 # Discrete colors for ecoregions/biomes
 eco_colors <- setNames(eco_final$Color, paste(eco_final$Name, "(n =", eco_final$n, ")", sep= " "))
@@ -448,48 +590,8 @@ p <- ggplot() +
     legend.margin = margin(0.5, 0.0, 0.0, 0.0, "cm"))+
   labs(fill = "Number of\nobservations", x = "Longitude", y = "Latitude")
 
-ggsave("../Images/map_observations_ecoregions_legend.png", ecoregions_legend, width= 6, height = 4)
+ggsave("../Images/map_observations_ecoregions_legend.png", ecoregions_legend, width= 6, height = 5)
 ggsave("../Images/map_observations_ecoregions.png", p, width= 8, height= 6)
 
-```
-
-
-
-## 2.4 Temporal
-```{r}
-# change dates
-interactions$date <- as.Date(interactions$date, format= c("%Y/%m/%d"))
-
-interactions <- interactions |> 
-  mutate(time_period = cut(as.Date(date),
-         breaks = as.Date(c("1995-01-01","2010-01-01" ,"2025-12-31")), right =F))
-
-period_counts <- table(interactions$time_period)
-
-interactions$year <- as.integer(format(interactions$date, "%Y"))
-
-p <- ggplot(interactions) +
-  geom_histogram( aes(x = year, fill = time_period),binwidth = 1, boundary = 0.5) +
-  scale_y_log10( breaks = 10^(0:5), labels = scales::trans_format("log10", scales::math_format(10^.x)))+
-  theme_pubr() +
-  ylab("Number of observations") +
-  xlab("Year")+
-  theme(legend.position = "bottom", legend.title = element_blank())+
-  scale_colour_manual(name="time_period", 
-      values = c("1995-01-01" = "skyblue", "2010-01-01" = "steelblue"),
-      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
-                 paste0("2010-2025 (n = ", period_counts[2], ")")))+
-  scale_fill_manual(name="time_period",
-      values = c("1995-01-01" = "skyblue", "2010-01-01" = "steelblue"),
-      labels = c(paste0("1995-2009 (n = ", period_counts[1], ")"),
-                 paste0("2010-2025 (n = ", period_counts[2], ")")))
-
-ggsave("../Images/timescale_period.png", p, width= 5, height= 3)
-```
-
-# 3 SAVE
-```{r}
-# save
-write_csv(interactions, "../Results/Interaction_final.csv")
 ```
 

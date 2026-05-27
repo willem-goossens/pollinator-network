@@ -45,13 +45,13 @@ sum(obs$`has photos`, na.rm=T)
 ```{r}
 # only get european countries
 europe <- c(
-  "Albania", "Andorra", "Armenia", "Austria", 
+  "Albania", "Andorra", "Austria", 
   "Belarus", "Belgium", "Bosnia and Herzegovina", "Bulgaria",
   "Croatia", "Cyprus", "Czechia", 
   "Denmark", 
   "Estonia",
   "Finland", "France",
-  "Georgia", "Germany", "Greece",
+   "Germany", "Greece",
   "Hungary",
   "Iceland", "Ireland", "Italy",
   "Kosovo", 
@@ -138,9 +138,6 @@ sum(names$n[names$`species type`=="aggregate species"])
 sum(names$n[names$`species type`!="aggregate species"])
 ```
 
-
-
-## 3 SAVE
 ```{r}
 # only save relevant columns
 col_save <- c("id","date","time","species name","scientific name","family","species type","number","sex","life stage","activity",
@@ -150,14 +147,136 @@ obs <- obs[, colnames(obs) %in% col_save]
 
 # check number of observations with related species
 length(obs$id[!is.na(obs$`related species`)])
-# 525,000 observations
+# 525,980 observations
 # and 217,000 of these have no image
 # 300,000 can be used for validation normally 
 # but it should still be checked whether these are all pollinators
 
-obs_bees <- obs[obs$family %in% bees,]
+obs <- obs[obs$family %in% bees,]
 
-write_csv(obs_bees, "../Data/Observation/observation_org_bees.csv")
+# remove rejected
+obs <- obs[!obs$`validation status` == "rejected", ]
+```
+
+
+## 2.4 Euromed
+```{r}
+# merge with euro_med regions
+# reduce dataset
+coord <- obs |> dplyr::select("id", "country","lat", "lng")
+colnames(coord)[2] <- "observation_country"
+
+# make geometrical dataset
+coord <- st_as_sf(coord, coords = c("lng","lat"),crs = 4326)
+
+# check regions
+medRegions <- read_sf("~/Doctoraat/Impact/Extra data/EURO+MED/Regions", "Emed_regions")
+medRegions <- st_transform(medRegions, CRS("+proj=longlat +datum=WGS84"))
+
+# Assign all plots which are within one of the regions to the given region
+sf_use_s2(T) #S2 can provide better performance for certain types of spatial operations, especially when dealing with large spatial datasets.
+joinedData <- st_join(coord, medRegions[-20,], join = st_within)
+
+# There is something awry with the geometry of the Netherlands, this is why we treat it specially here
+sf_use_s2(F)
+res <- st_join(coord, medRegions[20,], join = st_within)
+# Merge the Netherlands back into the overall data
+# use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
+joinedData[(res$Region == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+# check how many not assigned
+sum(is.na(joinedData$Region))/nrow(joinedData)
+```
+
+
+
+Change some names
+```{r}
+# give the points without a country their region
+joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+```
+
+
+Assign remaining
+```{r}
+# which plots are not assigned, many of them are located near the coast
+remainingPlots <- joinedData[is.na(joinedData$country),]
+# assign all to closest region
+remainingPlots <- st_join(remainingPlots[, 1:2], medRegions[-20,], join = st_nearest_feature)
+
+# for Netherlands, check again
+# There is something awry with the geometry of the Netherlands, this is why we treat it specially here
+sf_use_s2(F)
+res <- st_join(remainingPlots[remainingPlots$observation_country=="Netherlands", 1:2], medRegions[20,], join = st_nearest_feature)
+# Merge the Netherlands back into the overall data
+# use the in data to give the index for joinedData (because we use res for the region and replace totally with the subset of data being from the Netherlands)
+remainingPlots[(remainingPlots$observation_country == "Netherlands") %in% TRUE,] <- res[(res$Region == "Netherlands") %in% TRUE,]
+sf_use_s2(T)
+
+# assign again
+joinedData[is.na(joinedData$country),] <- remainingPlots
+```
+
+
+```{r}
+# give the points without a country their region
+joinedData$country[is.na(joinedData$country)] <- joinedData$Region[is.na(joinedData$country)]
+
+# change United Kingdom
+joinedData$country <- gsub("United.Kingdom","United Kingdom",joinedData$country)
+joinedData$country <- gsub("Republic.of.Ireland","Ireland",joinedData$country)
+countries <- unique(joinedData$country)
+
+# check whether the number of countries and regions is the same
+sum(is.na(joinedData$country)) == sum(is.na(joinedData$Region))
+
+# change to Sicily
+joinedData$country[joinedData$country %in% "Italy & Malta"] <- joinedData$Region[joinedData$country %in% "Italy & Malta"]
+# change to Turkey 
+joinedData$country[joinedData$country %in% "Greece & Turkey"] <- "Greece"
+```
+
+
+Check overlap countries and Euro+MED
+```{r}
+# how many are the same
+sum(joinedData$observation_country == joinedData$country)/length(joinedData$id)
+
+# which not
+remaining <- joinedData[joinedData$observation_country != joinedData$country, ]
+
+# plot data to check
+#ggplot()+ geom_sf(data= remaining) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+
+# create box around Europe
+europe_bbox <- st_bbox(c(xmin = -30, xmax = 80, ymin = 20, ymax = 90))
+europe_polygon <- st_as_sfc(europe_bbox)
+
+# crop to regions
+sf_use_s2(F)
+joinedData_mainland <- st_crop(joinedData, europe_polygon)
+joinedData_mainland <- st_crop(joinedData_mainland, medRegions, crop=F)
+sf_use_s2(T)
+
+# remove some
+removed <- joinedData[!joinedData$id %in% joinedData_mainland$id,] 
+joinedData <- joinedData_mainland
+obs <- obs[obs$id %in% joinedData$id, ]
+
+# plot the removed ones
+ggplot()+ geom_sf(data= removed) +geom_sf(data = medRegions, fill = NA, color = "grey", size = 0.2, alpha= 0.5)
+
+# we will use our own classication to align with iNaturalist
+obs$euromed_region <- joinedData$country[match(obs$id, joinedData$id)]
+```
+
+
+
+## 3 SAVE
+```{r}
+# save
+write_csv(obs, "../Data/Observation/observation_org_bees.csv")
 
 # most observations have pictures
 # remove observations that have neither a picture nor an associated (related) species

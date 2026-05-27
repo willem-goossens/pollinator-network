@@ -14,22 +14,21 @@ rm(list =ls())
 
 ```{r}
 library(tidyverse)
+library(ggpubr)
 ```
 
 ## 1.2 Interactions
 ```{r}
 # load data
-interactions <- read_csv("../Results/Interaction_final.csv", show_col_types = FALSE)
-
-
-# get genus and family data
-interactions$obs_genus[is.na(interactions$obs_genus)] <- interactions$plantnet_genus[is.na(interactions$obs_genus)] 
-interactions$obs_family[is.na(interactions$obs_family)] <- interactions$plantnet_family[is.na(interactions$obs_family)] 
-
-# get specific data only
-plants <- interactions |> group_by(plant_taxa, obs_genus, obs_family, plant_rank_final, euromed_region) |> summarise(n= n())
-plants <- plants[plants$plant_rank_final=="Species",]
+interactions <- read_csv( "../Results/Interaction_all.csv", show_col_types = FALSE)
 ```
+
+
+```{r}
+# get specific data only
+plants <- interactions |> group_by(plant_taxa, plant_genus, plant_family, plant_rank_final, euromed_region) |> summarise(n= n())
+```
+
 
 ## 1.3 Native
 ```{r}
@@ -71,21 +70,128 @@ change_regions <- data.frame(new = plant_regions[!plant_regions %in% neophyte_re
 
 neophyte$Region[neophyte$Region %in% change_regions$old] <-
   change_regions$new[match(neophyte$Region[neophyte$Region %in% change_regions$old], change_regions$old)]
+```
 
 
+```{r}
+# check duplicates in neophytes
+dup <- neophyte[duplicated(neophyte[,2:3]) | duplicated(neophyte[,2:3], fromLast=T),]
+# is there a difference is native status
+dup <- dup[!(duplicated(dup[,c(2,3,8)])|duplicated(dup[,c(2,3,8)], fromLast=T)) ,]
+# looks fine, remove duplicates from neophytes
+neophyte <- neophyte[!(duplicated(neophyte[,2:3]) | duplicated(neophyte[,2:3], fromLast=T)),]
+```
+
+
+
+```{r}
 # assign classes
-plants <- left_join(plants, neophyte[, c(2,3,6)], by= c("eva_name"="species","euromed_region"="Region"))
-sum(!is.na(plants$Neophyte))/nrow(plants)
-plants$Neophyte[is.na(plants$Neophyte) & plants$plant_taxa %in% neophyte$species[neophyte$Neophyte=="extra"]] <- "extra"
-sum(!is.na(plants$Neophyte))/nrow(plants)
+plants <- left_join(plants, neophyte[, c(2,3,8)], by= c("eva_name"="species","euromed_region"="Region"))
+sum(!is.na(plants$statusNew))/nrow(plants)
+plants$statusNew[is.na(plants$statusNew) & plants$plant_taxa %in% neophyte$species[neophyte$statusNew=="extra"]] <- "extra"
+sum(!is.na(plants$statusNew))/nrow(plants)
 
 # check number of missing interactions
-sum(plants$n[is.na(plants$Neophyte)])/sum(plants$n)
-# about 30% of interactions not assigned
+sum(plants$n[is.na(plants$statusNew)])/sum(plants$n)
+# about 38% of interactions not assigned
+
+# check number of unknown per region
+plants[is.na(plants$statusNew),] |> group_by(euromed_region) |> summarise(n=n())
+```
+
+
+```{r}
+# get per species the number of interactions above certain thresholds
+plant_imp <- data.frame(plant_taxa = character(), euromed_region = character(),
+                        number = numeric(), threshold = numeric())
+
+# run code
+for(i in c(1,2,3,4,5, 10,20)){
+  test <- interactions |>   group_by(name, plant_taxa, euromed_region) |>  filter(n() >= i) |> 
+    distinct(name, plant_taxa) |> group_by(plant_taxa, euromed_region) |> summarise(number=n()) 
+  test$threshold <- i
+  plant_imp <- bind_rows(plant_imp, test)
+}
+
+# assign score (based on breaks)
+plant_imp <- plant_imp |> mutate(score = cut(number, breaks = c(0,1, 2, 5,10, 20, 50, 100, 200),
+                                             labels = c(0, 1, 2, 5, 10, 20, 50, 100)))
+# make number 
+plant_imp$score <- as.numeric(plant_imp$score)
+
+# summarise scores and assign importance
+plant_imp <- plant_imp |> group_by(plant_taxa, euromed_region) |> summarise(score= sum(score))
+plant_imp <- plant_imp |> mutate(importance = cut(score, breaks = c(0, 2, 10, 100),
+                                                  labels = c("Low","Medium","High")))
+
+# check importantce
+table(plant_imp$importance)
+
+# assign to plants
+plants <- left_join(plants, plant_imp[, c(1,2,4)])
+plants$importance[!is.na(plants$statusNew)] <- NA
+```
+
+
+```{r}
+# save file
+write_csv(plants, "../Extra/Names/Interaction_alien_status.csv")
 ```
 
 
 ```{r}
 # assign 
-interactions$status <- plants$Neophyte[match(interactions$plant_taxa, plants$plant_taxa)]
+interactions$status <- plants$statusNew[match(interactions$plant_taxa, plants$plant_taxa)]
+interactions_save <- interactions
 ```
+
+
+## 1.4 Plot
+```{r}
+# only save to species level, which we use
+interactions <- interactions[interactions$plant_rank_final=="Species",]
+# get data
+plot_data <- interactions |> dplyr::select(plant_taxa, euromed_region, status)
+plot_data <- plot_data |> group_by(euromed_region, status) |> summarise(n = n(), .groups = "drop") |>
+  group_by(euromed_region) |>  mutate(tot = sum(n), rel = n/tot*100)
+plot_data$status[is.na(plot_data$status)] <- "Not yet defined"
+
+# plot
+interact_plot <- ggplot(plot_data, aes(x= status, y = rel, col= status, fill= status))+
+  geom_violin(scale = "width")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=3)+
+  theme(legend.position = "none")+
+  ylab("Origin classifications [%]")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native", "Not yet\ndefined"))+
+  ggtitle("Observation level")
+
+# not for species level
+plot_data2 <- interactions |> dplyr::select(plant_taxa, euromed_region, status)
+plot_data2 <- plot_data2|> group_by(plant_taxa, euromed_region, status) |> filter(!duplicated(plant_taxa))  
+plot_data2 <- plot_data2 |> group_by(euromed_region, status) |> summarise(n=n(), .groups = "drop") |>
+  group_by(euromed_region) |>  mutate(tot = sum(n), rel = n/tot*100)
+plot_data2$status[is.na(plot_data2$status)] <- "Not yet defined"
+
+# plot
+species_plot <- ggplot(plot_data2, aes(x= status, y = rel, col= status, fill= status))+
+  geom_violin(scale = "width")+
+  ggpubr::theme_pubr()+
+  geom_boxplot(width= 0.2, alpha=0.8, fill="white")+
+  stat_summary(fun= "mean", geom = "point", aes(group= status), size=3)+
+  theme(legend.position = "none")+
+  ylab("Origin classifications [%]")+
+  xlab(NULL)+
+  scale_x_discrete(labels=c("Extra-\nEuropean", "Intra-\nEuropean", "Native", "Not yet\ndefined"))+
+  ggtitle("Species level")
+  
+p <- ggarrange(species_plot, interact_plot, nrow=1, ncol=2, labels= c("a","b"),
+                  font.label = list(size = 12), align="hv")
+
+  
+ggsave("../Images/Classifications_origin_percentage.png", p, width= 8, height =4)
+```
+
+
